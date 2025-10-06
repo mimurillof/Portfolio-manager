@@ -49,6 +49,9 @@ class PortfolioCalculator:
             total_value += position_value
             total_change_absolute += position_change
             
+            # Obtener datos de rendimiento semanal para sparklines
+            weekly_perf = self.data_fetcher.get_weekly_performance(symbol)
+            
             assets_data.append({
                 "symbol": symbol,
                 "name": info["name"],
@@ -60,6 +63,7 @@ class PortfolioCalculator:
                 "logo_url": info.get("logo_url"),
                 "market_cap": info["market_cap"],
                 "volume": info["volume"],
+                "weekly_performance": weekly_perf,
             })
         
         if total_value > 0:
