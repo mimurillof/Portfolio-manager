@@ -1,0 +1,20 @@
+# Requirements for Portfolio Manager
+
+# Core dependencies
+yfinance>=0.2.36
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Visualization
+plotly>=5.18.0
+kaleido>=0.2.1  # Para exportar gráficos a PNG
+
+# Optional: Para mejor logging
+colorlog>=6.8.0
+
+# Utilidades de tiempo
+pytz>=2023.3
+
+# API Service
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
