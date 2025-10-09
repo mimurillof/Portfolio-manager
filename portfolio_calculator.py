@@ -336,9 +336,34 @@ class PortfolioCalculator:
         active_list = sort_bucket(market_data_map["active"], key="volume", reverse=True)
 
         combined_map: Dict[str, Dict[str, Any]] = {}
-        for bucket_name in ("watchlist", "gainers", "losers", "active", "viewed"):
+        bucket_visit_order = ("gainers", "losers", "active", "viewed", "watchlist")
+        for bucket_name in bucket_visit_order:
             combined_map.update(market_data_map[bucket_name])
+
         all_list = list(combined_map.values())
+
+        def _impact_key(entry: Dict[str, Any]) -> tuple:
+            change = entry.get("change_percent")
+            volume = entry.get("volume")
+            market_cap = entry.get("market_cap")
+
+            change_score = abs(change) if isinstance(change, (int, float)) else 0.0
+            volume_score = float(volume) if isinstance(volume, (int, float)) else 0.0
+            market_cap_score = float(market_cap) if isinstance(market_cap, (int, float)) else 0.0
+
+            return (change_score, volume_score, market_cap_score)
+
+        all_list.sort(key=_impact_key, reverse=True)
+
+        watchlist_symbols = {item.get("symbol") for item in watchlist if item.get("symbol")}
+        existing_symbols = {entry.get("symbol") for entry in all_list}
+        missing_watchlist = [
+            market_data_map["watchlist"][symbol]
+            for symbol in watchlist_symbols - existing_symbols
+            if symbol in market_data_map["watchlist"]
+        ]
+        if missing_watchlist:
+            all_list.extend(missing_watchlist)
 
         response = {
             "all": all_list[: top_n * 2],
