@@ -2,13 +2,10 @@
 Módulo para integración con FastAPI Backend
 Este archivo proporciona funciones que el backend puede importar
 """
-import json
-from pathlib import Path
-from typing import Dict, Optional
 import logging
+from typing import Dict, Optional
 
 from portfolio_manager import PortfolioManager
-from config import OUTPUT_FILES
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -32,21 +29,75 @@ class PortfolioAPIService:
             Diccionario con datos del portafolio
         """
         try:
-            # Si se fuerza actualización o no existe el archivo, generar nuevo reporte
-            if force_refresh or not OUTPUT_FILES["portfolio_data"].exists():
-                logger.info("Generando nuevo reporte...")
-                report = self.manager.generate_full_report(period=period)
-                return report
-            
-            # Leer datos guardados
-            with open(OUTPUT_FILES["portfolio_data"], 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            
+            if force_refresh:
+                logger.info("Generando nuevo reporte forzado...")
+                return self.manager.generate_full_report(period=period)
+
+            data = self.manager._load_existing_portfolio_data()  # pylint: disable=protected-access
+            if not data:
+                logger.info("No hay datos persistidos; generando nuevo reporte...")
+                return self.manager.generate_full_report(period=period)
+
+            needs_save = self._ensure_weekly_performance(data)
+
+            if needs_save:
+                try:
+                    self.manager._save_portfolio_data(data)  # pylint: disable=protected-access
+                except Exception as save_error:  # pragma: no cover - logging de falla
+                    logger.warning(
+                        "No se pudo actualizar datos persistidos con weekly_performance: %s",
+                        save_error,
+                    )
+
             return data
-        
+
         except Exception as e:
             logger.error(f"Error obteniendo datos del portafolio: {e}")
             return {}
+    
+    def _ensure_weekly_performance(self, data: Dict) -> bool:
+        """Garantiza que cada activo tenga datos de weekly_performance.
+
+        Returns:
+            bool: True si se realizaron cambios que requieren reescritura del archivo.
+        """
+
+        updated = False
+
+        for key in ("assets", "allocation", "gainers", "losers"):
+            asset_list = data.get(key)
+            if not isinstance(asset_list, list):
+                continue
+
+            if self._update_assets_weekly_performance(asset_list):
+                updated = True
+
+        return updated
+
+    def _update_assets_weekly_performance(self, assets_list) -> bool:
+        """Actualiza weekly_performance en una lista de activos."""
+        updated = False
+
+        for asset in assets_list:
+            if not isinstance(asset, dict):
+                continue
+
+            weekly_perf = asset.get("weekly_performance")
+
+            if isinstance(weekly_perf, list) and len(weekly_perf) >= 2:
+                continue
+
+            symbol = asset.get("symbol")
+            if not symbol:
+                continue
+
+            weekly_data = self.manager.data_fetcher.get_weekly_performance(symbol)
+
+            if weekly_data and len(weekly_data) >= 2:
+                asset["weekly_performance"] = weekly_data
+                updated = True
+
+        return updated
     
     def get_portfolio_summary(self) -> Dict:
         """
@@ -85,18 +136,35 @@ class PortfolioAPIService:
             Contenido HTML del gráfico
         """
         try:
+            chart_key = "portfolio_performance"
             if chart_type == "portfolio":
                 chart_path = OUTPUT_FILES["portfolio_chart_html"]
             elif chart_type == "allocation":
-                chart_path = Path(OUTPUT_FILES["assets_charts_dir"]).parent / "allocation_chart.html"
+                chart_path = OUTPUT_FILES["assets_charts_dir"] / "allocation_chart.html"
+                chart_key = "allocation_chart"
             else:
-                # Asumiendo que es un símbolo de activo
                 chart_path = OUTPUT_FILES["assets_charts_dir"] / f"{chart_type}_chart.html"
-            
+                chart_key = f"asset_{chart_type}_html"
+
+            data = self.manager._load_existing_portfolio_data()  # pylint: disable=protected-access
+            remote_map = (data or {}).get("charts", {}) if isinstance(data, dict) else {}
+            remote_path = remote_map.get(f"{chart_key}_remote")
+            remote_url = remote_map.get(f"{chart_key}_url")
+
+            if remote_url:
+                logger.info("Usando gráfico remoto público desde Supabase: %s", remote_url)
+                return remote_url
+
+            if remote_path:
+                logger.info("Descargando gráfico remoto desde Supabase: %s", remote_path)
+                content = self.manager.storage.download_chart_asset(remote_path)
+                if content:
+                    return content.decode("utf-8", errors="ignore")
+
             if not chart_path.exists():
                 logger.warning(f"Gráfico no encontrado: {chart_path}")
                 return None
-            
+
             with open(chart_path, 'r', encoding='utf-8') as f:
                 return f.read()
         

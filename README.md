@@ -25,7 +25,7 @@ Portfolio manager/
 ├── requirements.txt         # Dependencias Python
 ├── README.md               # Esta documentación
 │
-├── data/                   # Datos JSON generados
+├── data/                   # Fallback local de datos JSON (Supabase Storage es la fuente principal)
 │   ├── portfolio_data.json
 │   └── market_data.json
 │
@@ -68,7 +68,7 @@ python portfolio_manager.py
 ```
 
 Esto generará:
-- Reporte completo en JSON
+- Reporte completo sincronizado en Supabase Storage (con fallback local JSON)
 - Gráficos HTML y PNG
 - Resumen en consola
 
@@ -253,7 +253,7 @@ PUT  /api/portfolio              - Actualizar portafolio
 
 ## 🔐 Consideraciones
 
-- **Cache**: Los datos se guardan en JSON para evitar llamadas excesivas a la API
+- **Cache**: Los datos se guardan en Supabase Storage (con fallback JSON local) para evitar llamadas excesivas a la API
 - **Rate Limiting**: yfinance tiene límites, usar `force_refresh=False` cuando sea posible
 - **Errores**: Manejo robusto de errores con logging
 - **Performance**: Los gráficos PNG requieren `kaleido` (opcional)

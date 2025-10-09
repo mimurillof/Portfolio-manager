@@ -18,3 +18,8 @@ pytz>=2023.3
 # API Service
 fastapi>=0.111.0
 uvicorn[standard]>=0.29.0
+apscheduler>=3.10.4
+
+# Storage
+supabase-py>=2.4.0
+python-dotenv>=1.0.1

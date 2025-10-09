@@ -3,7 +3,8 @@ Módulo para realizar cálculos del portafolio
 """
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Tuple
+import time
+from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
 import logging
 from data_fetcher import DataFetcher
@@ -201,32 +202,150 @@ class PortfolioCalculator:
             "max_drawdown_percent": max_drawdown,
         }
     
-    def get_market_overview(self, watchlist: List[Dict]) -> List[Dict]:
-        """
-        Obtiene un resumen del mercado basado en la watchlist
-        
-        Args:
-            watchlist: Lista de símbolos para seguir
-        
-        Returns:
-            Lista con información de mercado
-        """
-        market_data = []
-        
-        for item in watchlist:
-            symbol = item["symbol"]
+    def get_market_overview(
+        self,
+        watchlist: List[Dict],
+        *,
+        source_data: Optional[Dict] = None,
+        top_n: int = 10,
+        use_persisted: bool = True,
+    ) -> Dict[str, List[Dict]]:
+        """Obtiene listas de movimiento del mercado combinando watchlist y scraping."""
+
+        persisted = None
+        if use_persisted and source_data and isinstance(source_data, dict):
+            persisted = source_data.get("market_overview")
+            if isinstance(persisted, dict):
+                normalized = {
+                    key: [dict(item) for item in value if isinstance(item, dict)]
+                    for key, value in persisted.items()
+                    if isinstance(value, list)
+                }
+
+                # Solo reutilizar datos persistidos si contienen todas las listas necesarias
+                if (
+                    normalized.get("all")
+                    and normalized.get("gainers")
+                    and normalized.get("losers")
+                    and normalized.get("most_active")
+                ):
+                    return normalized
+
+        market_data_map: Dict[str, Dict[str, Dict[str, Any]]] = {
+            "watchlist": {},
+            "viewed": {},
+            "gainers": {},
+            "losers": {},
+            "active": {},
+        }
+
+        def upsert(target: str, symbol: str, payload: Dict[str, Any]) -> None:
+            existing = market_data_map[target].get(symbol, {})
+            merged = {**existing, **{k: v for k, v in payload.items() if v is not None}}
+            market_data_map[target][symbol] = merged
+
+        # Procesar watchlist con delay para evitar rate limiting
+        for idx, item in enumerate(watchlist):
+            symbol = item.get("symbol")
+            if not symbol:
+                continue
+
+            # Delay progresivo para evitar rate limiting
+            if idx > 0:
+                time.sleep(0.3)
+
             info = self.data_fetcher.get_stock_info(symbol)
             weekly_perf = self.data_fetcher.get_weekly_performance(symbol)
             
-            market_data.append({
+            payload = {
                 "symbol": symbol,
-                "name": item.get("name", info["name"]),
-                "exchange": item.get("exchange", info["exchange"]),
-                "current_price": info["current_price"],
-                "change_percent": info["change_percent"],
-                "market_cap": info["market_cap"],
-                "volume": info["volume"],
+                "name": item.get("name", info.get("name", symbol)),
+                "exchange": item.get("exchange", info.get("exchange")),
+                "current_price": info.get("current_price"),
+                "change_percent": info.get("change_percent"),
+                "market_cap": info.get("market_cap"),
+                "volume": info.get("volume"),
+                "logo_url": info.get("logo_url"),
                 "weekly_performance": weekly_perf,
-            })
-        
-        return market_data
+            }
+            upsert("watchlist", symbol, payload)
+            if payload["change_percent"] is not None:
+                if payload["change_percent"] > 0:
+                    upsert("gainers", symbol, payload)
+                elif payload["change_percent"] < 0:
+                    upsert("losers", symbol, payload)
+
+        movers_map = {
+            "gainers": "gainers",
+            "losers": "losers",
+            "active": "active",
+            "viewed": "viewed",
+        }
+
+        # Procesar market movers con límite y delay
+        for mover_type, bucket in movers_map.items():
+            table = self.data_fetcher.get_market_movers(mover_type)
+            if table is None:
+                continue
+            
+            # Limitar a top_n elementos para reducir llamadas
+            for idx, (_, row) in enumerate(table.head(top_n).iterrows()):
+                symbol = str(row.get("symbol", "")).upper()
+                if not symbol:
+                    continue
+                
+                # Delay para evitar rate limiting en yfinance
+                if idx > 0:
+                    time.sleep(0.2)
+                
+                # Solo obtener info si no está ya cacheada
+                info = self.data_fetcher.get_stock_info(symbol)
+                weekly_perf = self.data_fetcher.get_weekly_performance(symbol)
+
+                payload = {
+                    "symbol": symbol,
+                    "name": row.get("name") or info.get("name", symbol),
+                    "exchange": info.get("exchange"),
+                    "current_price": row.get("price") or info.get("current_price"),
+                    "change_percent": row.get("percent_change") or info.get("change_percent"),
+                    "market_cap": row.get("market_cap") or info.get("market_cap"),
+                    "volume": row.get("volume") or info.get("volume"),
+                    "logo_url": info.get("logo_url"),
+                    "weekly_performance": weekly_perf,
+                    "source": mover_type,
+                }
+
+                if bucket == "active":
+                    upsert("active", symbol, payload)
+                else:
+                    upsert(bucket, symbol, payload)
+                upsert("viewed", symbol, payload)
+
+        def sort_bucket(bucket: Dict[str, Dict[str, Any]], *, key: str, reverse: bool = True) -> List[Dict]:
+            items = list(bucket.values())
+            return sorted(
+                items,
+                key=lambda entry: (entry.get(key) or 0),
+                reverse=reverse,
+            )
+
+        viewed_list = sort_bucket(market_data_map["viewed"], key="volume", reverse=True)
+        watchlist_list = list(market_data_map["watchlist"].values())
+        gainers_list = sort_bucket(market_data_map["gainers"], key="change_percent", reverse=True)
+        losers_list = sort_bucket(market_data_map["losers"], key="change_percent", reverse=False)
+        active_list = sort_bucket(market_data_map["active"], key="volume", reverse=True)
+
+        combined_map: Dict[str, Dict[str, Any]] = {}
+        for bucket_name in ("watchlist", "gainers", "losers", "active", "viewed"):
+            combined_map.update(market_data_map[bucket_name])
+        all_list = list(combined_map.values())
+
+        response = {
+            "all": all_list[: top_n * 2],
+            "gainers": gainers_list[:top_n],
+            "losers": losers_list[:top_n],
+            "most_viewed": (viewed_list[:top_n] if viewed_list else watchlist_list[:top_n]),
+            "most_active": active_list[:top_n],
+        }
+
+        return response

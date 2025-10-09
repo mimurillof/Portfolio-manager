@@ -3,18 +3,22 @@ Módulo principal del Portfolio Manager
 Orquesta todas las operaciones y genera los archivos de salida
 """
 import json
+import logging
 from pathlib import Path
 from typing import Dict, List, Optional
-import logging
 from datetime import datetime
 
 from config import (
-    PORTFOLIO_CONFIG, WATCHLIST, TIME_PERIODS, 
-    CHART_CONFIG, OUTPUT_FILES
+    PORTFOLIO_CONFIG,
+    WATCHLIST,
+    TIME_PERIODS,
+    CHART_CONFIG,
+    OUTPUT_FILES,
 )
 from data_fetcher import DataFetcher
 from portfolio_calculator import PortfolioCalculator
 from chart_generator import ChartGenerator
+from supabase_storage import SupabaseStorage
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -29,7 +33,32 @@ class PortfolioManager:
         self.chart_generator = ChartGenerator(CHART_CONFIG)
         self.portfolio_config = PORTFOLIO_CONFIG
         self.watchlist = WATCHLIST
+        self.storage = SupabaseStorage()
     
+        self._existing_portfolio_data: Optional[Dict] = None
+    
+    def _load_existing_portfolio_data(self) -> Optional[Dict]:
+        if self._existing_portfolio_data is not None:
+            return self._existing_portfolio_data
+
+        try:
+            data = self.storage.load_portfolio_json()
+            if data:
+                self._existing_portfolio_data = data
+                return data
+        except Exception as exc:
+            logger.warning("No se pudo cargar datos desde Supabase: %s", exc)
+
+        portfolio_path = OUTPUT_FILES.get("portfolio_data")
+        if portfolio_path and Path(portfolio_path).is_file():
+            try:
+                with open(portfolio_path, "r", encoding="utf-8") as fp:
+                    self._existing_portfolio_data = json.load(fp)
+                    return self._existing_portfolio_data
+            except Exception as exc:
+                logger.debug("No se pudo cargar portfolio_data local: %s", exc)
+        return None
+
     def generate_full_report(self, period: str = "6mo") -> Dict:
         """
         Genera un reporte completo del portafolio
@@ -68,19 +97,43 @@ class PortfolioManager:
             portfolio_summary["assets"]
         )
         
+        # Enriquecer allocation, ganadores y perdedores con weekly_performance si falta
+        weekly_map = {
+            asset["symbol"]: asset.get("weekly_performance")
+            for asset in portfolio_summary["assets"]
+            if isinstance(asset, dict)
+        }
+
+        def _inject_weekly(data_list: List[Dict]) -> None:
+            for entry in data_list:
+                if not isinstance(entry, dict):
+                    continue
+                weekly = entry.get("weekly_performance")
+                if isinstance(weekly, list) and len(weekly) >= 2:
+                    continue
+                symbol = entry.get("symbol")
+                if symbol and weekly_map.get(symbol):
+                    entry["weekly_performance"] = weekly_map[symbol]
+
+        _inject_weekly(allocation)
+        _inject_weekly(gainers)
+        _inject_weekly(losers)
+
         # 6. Obtener datos de mercado (Watchlist)
-        market_overview = self.calculator.get_market_overview(self.watchlist)
+        market_overview_sections = self.calculator.get_market_overview(
+            self.watchlist or [],
+            source_data=self._load_existing_portfolio_data(),
+            use_persisted=False,
+        )
         
-        # Separar watchlist por categorías
-        market_gainers = [item for item in market_overview if item["change_percent"] > 0]
-        market_losers = [item for item in market_overview if item["change_percent"] < 0]
-        
-        # Ordenar por mayor cambio
-        market_gainers.sort(key=lambda x: x["change_percent"], reverse=True)
-        market_losers.sort(key=lambda x: x["change_percent"])
+        all_list = market_overview_sections.get("all", [])
+        gainers_list = market_overview_sections.get("gainers", [])
+        losers_list = market_overview_sections.get("losers", [])
+        most_viewed_list = market_overview_sections.get("most_viewed") or all_list
+        most_active_list = market_overview_sections.get("most_active") or all_list
         
         # 7. Generar gráficos
-        self._generate_charts(performance_df, portfolio_summary["assets"])
+        generated_chart_paths = self._generate_charts(performance_df, portfolio_summary["assets"])
         
         # 8. Compilar reporte completo
         report = {
@@ -98,31 +151,31 @@ class PortfolioManager:
             "gainers": gainers,
             "losers": losers,
             "market_overview": {
-                "all": market_overview,
-                "gainers": market_gainers[:5],  # Top 5
-                "losers": market_losers[:5],    # Top 5
-                "most_viewed": market_overview[:4],  # Primeros 4
+                "all": all_list,
+                "gainers": gainers_list[:5],
+                "losers": losers_list[:5],
+                "most_viewed": most_viewed_list[:4],
+                "most_active": most_active_list[:5],
             },
-            "charts": {
-                "portfolio_performance": str(OUTPUT_FILES["portfolio_chart_html"]),
-                "portfolio_performance_png": str(OUTPUT_FILES["portfolio_chart_png"]),
-            }
+            "charts": generated_chart_paths,
         }
         
-        # 9. Guardar datos en JSON
+        # 9. Guardar datos en JSON/Supabase
         self._save_portfolio_data(report)
         
         logger.info("Reporte completo generado exitosamente")
         
         return report
     
-    def _generate_charts(self, performance_df, assets_data: List[Dict]) -> None:
+    def _generate_charts(self, performance_df, assets_data: List[Dict]) -> Dict[str, str]:
         """
         Genera todos los gráficos necesarios
         
         Args:
             performance_df: DataFrame con rendimiento del portafolio
             assets_data: Lista de datos de activos
+        Returns:
+            Diccionario con rutas locales y remotas de gráficos
         """
         logger.info("Generando gráficos...")
         
@@ -132,6 +185,14 @@ class PortfolioManager:
             OUTPUT_FILES["portfolio_chart_html"],
             OUTPUT_FILES["portfolio_chart_png"]
         )
+
+        charts_map: Dict[str, str] = {
+            "portfolio_performance": str(OUTPUT_FILES["portfolio_chart_html"]),
+            "portfolio_performance_png": str(OUTPUT_FILES["portfolio_chart_png"]),
+        }
+
+        self._upload_chart_if_enabled("portfolio_performance", OUTPUT_FILES["portfolio_chart_html"], charts_map)
+        self._upload_chart_if_enabled("portfolio_performance_png", OUTPUT_FILES["portfolio_chart_png"], charts_map)
         
         # Gráficos individuales de cada activo
         assets_charts_dir = OUTPUT_FILES["assets_charts_dir"]
@@ -175,6 +236,9 @@ class PortfolioManager:
                 daily_data=daily_data,
                 intraday_interval=intraday_interval,
             )
+
+            self._upload_chart_if_enabled(f"asset_{symbol}_html", output_html, charts_map)
+            self._upload_chart_if_enabled(f"asset_{symbol}_png", output_png, charts_map)
         
         # Gráfico de distribución
         allocation = self.calculator.calculate_asset_allocation(assets_data)
@@ -186,8 +250,24 @@ class PortfolioManager:
             allocation_html,
             allocation_png
         )
+
+        self._upload_chart_if_enabled("allocation_chart", allocation_html, charts_map)
+        self._upload_chart_if_enabled("allocation_chart_png", allocation_png, charts_map)
         
         logger.info("Gráficos generados exitosamente")
+        return charts_map
+
+    def _upload_chart_if_enabled(self, key: str, path: Path, charts_map: Dict[str, str]) -> None:
+        try:
+            remote_info = self.storage.upload_chart_asset(path)
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("No se pudo subir gráfico '%s' a Supabase: %s", key, exc)
+            return
+
+        if remote_info:
+            charts_map[f"{key}_remote"] = remote_info.get("path", "")
+            if remote_info.get("public_url"):
+                charts_map[f"{key}_url"] = remote_info["public_url"]
     
     def _save_portfolio_data(self, report: Dict) -> None:
         """
@@ -197,13 +277,18 @@ class PortfolioManager:
             report: Diccionario con el reporte completo
         """
         try:
-            with open(OUTPUT_FILES["portfolio_data"], 'w', encoding='utf-8') as f:
-                json.dump(report, f, indent=2, ensure_ascii=False, default=str)
-            
-            logger.info(f"Datos guardados en: {OUTPUT_FILES['portfolio_data']}")
-        
-        except Exception as e:
-            logger.error(f"Error guardando datos: {e}")
+            self.storage.save_portfolio_json(report)
+            logger.info("Datos guardados en Supabase")
+            self._existing_portfolio_data = report
+        except Exception as exc:
+            logger.warning("No se pudo guardar en Supabase: %s", exc)
+            try:
+                with open(OUTPUT_FILES["portfolio_data"], 'w', encoding='utf-8') as f:
+                    json.dump(report, f, indent=2, ensure_ascii=False, default=str)
+                logger.info(f"Datos guardados localmente en: {OUTPUT_FILES['portfolio_data']}")
+                self._existing_portfolio_data = report
+            except Exception as local_exc:
+                logger.error("Error guardando datos localmente: %s", local_exc)
     
     def get_portfolio_summary(self) -> Dict:
         """
@@ -231,21 +316,12 @@ class PortfolioManager:
         Returns:
             Diccionario con datos de mercado
         """
-        market_overview = self.calculator.get_market_overview(self.watchlist)
-        
-        market_gainers = [item for item in market_overview if item["change_percent"] > 0]
-        market_losers = [item for item in market_overview if item["change_percent"] < 0]
-        
-        market_gainers.sort(key=lambda x: x["change_percent"], reverse=True)
-        market_losers.sort(key=lambda x: x["change_percent"])
-        
-        return {
-            "all": market_overview,
-            "gainers": market_gainers[:5],
-            "losers": market_losers[:5],
-            "most_viewed": market_overview[:4],
-            "timestamp": datetime.now().isoformat(),
-        }
+        overview = self.calculator.get_market_overview(
+            self.watchlist,
+            use_persisted=False,
+        )
+        overview["timestamp"] = datetime.now().isoformat()
+        return overview
     
     def update_portfolio_config(self, new_config: Dict) -> None:
         """
