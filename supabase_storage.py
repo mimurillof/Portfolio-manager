@@ -218,7 +218,7 @@ class SupabaseStorage:
                     file_obj,
                     {
                         "content-type": "application/json",
-                        "upsert": True,
+                        "upsert": "true",
                     },
                 )
             error_message = self._extract_error(response)
@@ -255,7 +255,7 @@ class SupabaseStorage:
                 file_obj,
                 {
                     "content-type": content_type,
-                    "upsert": True,
+                    "upsert": "true",
                 },
             )
 
