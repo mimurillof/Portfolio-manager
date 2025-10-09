@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from config import PORTFOLIO_CONFIG
+from config import PORTFOLIO_CONFIG, SupabaseConfig
 from portfolio_manager import PortfolioManager
 
 logging.basicConfig(level=os.getenv("PORTFOLIO_LOG_LEVEL", "INFO"))
@@ -148,6 +148,17 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def on_startup() -> None:
+    if SupabaseConfig.is_configured():
+        logger.info(
+            "Supabase configurado. Bucket=%s, prefix_json=%s, prefix_charts=%s",
+            SupabaseConfig.SUPABASE_BUCKET_NAME,
+            SupabaseConfig.SUPABASE_BASE_PREFIX,
+            SupabaseConfig.SUPABASE_BASE_PREFIX2,
+        )
+    else:
+        logger.warning(
+            "Supabase no está configurado o está deshabilitado; se usará almacenamiento local como fallback.")
+
     initialize_last_generation()
     # Si no hay datos persistidos o es necesario, generar uno inicial (fuera de horario se salta)
     try:
@@ -185,6 +196,12 @@ async def health() -> Dict[str, object]:
         "last_generation": ts.isoformat() if isinstance(ts, datetime) else None,
         "period": last_generation_state.get("period"),
         "in_progress": last_generation_state.get("in_progress"),
+        "supabase": {
+            "configured": SupabaseConfig.is_configured(),
+            "bucket": SupabaseConfig.SUPABASE_BUCKET_NAME,
+            "data_prefix": SupabaseConfig.SUPABASE_BASE_PREFIX,
+            "charts_prefix": SupabaseConfig.SUPABASE_BASE_PREFIX2,
+        },
     }
 
 

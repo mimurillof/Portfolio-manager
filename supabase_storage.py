@@ -24,12 +24,13 @@ class SupabaseStorage:
     """Cliente ligero para manejar lectura/escritura en Supabase Storage."""
 
     def __init__(self) -> None:
-        self._client: Optional[Client] = None
+        self._client: Optional[Any] = None
+        self._bucket_validated: bool = False
 
     def _is_enabled(self) -> bool:
         return SupabaseConfig.is_configured()
 
-    def _get_client(self) -> Client:
+    def _get_client(self) -> Any:
         if self._client is not None:
             return self._client
 
@@ -47,6 +48,122 @@ class SupabaseStorage:
         )
         return self._client
 
+    @staticmethod
+    def _extract_error(response: Any) -> Optional[str]:
+        """Obtiene el mensaje de error desde un StorageResponse o diccionario."""
+
+        if response is None:
+            return None
+
+        if hasattr(response, "error"):
+            error_obj = getattr(response, "error")
+            if not error_obj:
+                return None
+            if isinstance(error_obj, dict):
+                return (
+                    error_obj.get("message")
+                    or error_obj.get("error")
+                    or str(error_obj)
+                )
+            return str(error_obj)
+
+        if isinstance(response, dict):
+            error_obj = response.get("error")
+            if not error_obj:
+                return None
+            if isinstance(error_obj, dict):
+                return (
+                    error_obj.get("message")
+                    or error_obj.get("error")
+                    or str(error_obj)
+                )
+            return str(error_obj)
+
+        return None
+
+    def _ensure_bucket_exists(self, client: Any) -> None:
+        """Valida que el bucket exista; si es posible, lo crea automáticamente."""
+
+        if self._bucket_validated:
+            return
+
+        bucket_name = SupabaseConfig.SUPABASE_BUCKET_NAME
+        if not bucket_name:
+            raise RuntimeError("Nombre de bucket de Supabase no configurado.")
+
+        storage_client = getattr(client, "storage", None)
+        if storage_client is None:
+            raise RuntimeError("El cliente de Supabase no expone el módulo de storage.")
+
+        try:
+            bucket_exists = False
+
+            get_bucket_fn = getattr(storage_client, "get_bucket", None)
+            if callable(get_bucket_fn):
+                response = get_bucket_fn(bucket_name)
+                error_message = self._extract_error(response)
+                if not error_message:
+                    bucket_exists = True
+                elif "not found" not in error_message.lower():
+                    raise RuntimeError(error_message)
+
+            if not bucket_exists:
+                list_fn = getattr(storage_client, "list_buckets", None)
+                if callable(list_fn):
+                    response = list_fn()
+                    error_message = self._extract_error(response)
+                    if error_message:
+                        logger.debug("No se pudo listar buckets: %s", error_message)
+                    data = getattr(response, "data", None)
+                    if isinstance(data, list):
+                        for item in data:
+                            name = None
+                            if isinstance(item, dict):
+                                name = item.get("name") or item.get("id")
+                            elif hasattr(item, "get"):
+                                try:
+                                    name = item.get("name")  # type: ignore[attr-defined]
+                                except Exception:  # pragma: no cover - acceso dinámico best effort
+                                    name = None
+                            if name == bucket_name:
+                                bucket_exists = True
+                                break
+
+            if bucket_exists:
+                return
+
+            if not SupabaseConfig.SUPABASE_SERVICE_ROLE_KEY:
+                raise RuntimeError(
+                    "El bucket de Supabase no existe y no hay clave de servicio para crearlo automáticamente."
+                )
+
+            create_fn = getattr(storage_client, "create_bucket", None)
+            if not callable(create_fn):
+                raise RuntimeError(
+                    "No se puede crear el bucket automáticamente (método create_bucket no disponible)."
+                )
+
+            response = create_fn(
+                bucket_name,
+                {"public": True},
+            )
+            error_message = self._extract_error(response)
+            if error_message:
+                raise RuntimeError(error_message)
+
+            logger.info("Bucket '%s' creado automáticamente en Supabase.", bucket_name)
+
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("No se pudo validar o crear el bucket '%s': %s", bucket_name, exc)
+        finally:
+            # Evitar repetir validaciones en la misma ejecución; si falló, se registró el warning.
+            self._bucket_validated = True
+
+    def _get_bucket(self) -> Any:
+        client = self._get_client()
+        self._ensure_bucket_exists(client)
+        return client.storage.from_(SupabaseConfig.SUPABASE_BUCKET_NAME)
+
     def load_portfolio_json(self) -> Optional[Dict[str, Any]]:
         """Descarga el JSON del portafolio desde Supabase Storage."""
 
@@ -54,8 +171,7 @@ class SupabaseStorage:
             logger.debug("Supabase deshabilitado; se omite descarga remota.")
             return None
 
-        client = self._get_client()
-        bucket = client.storage.from_(SupabaseConfig.SUPABASE_BUCKET_NAME)
+        bucket = self._get_bucket()
         path = SupabaseConfig.portfolio_json_path()
 
         logger.info("Descargando portafolio desde Supabase: %s/%s", SupabaseConfig.SUPABASE_BUCKET_NAME, path)
@@ -78,8 +194,7 @@ class SupabaseStorage:
         if not self._is_enabled():
             raise RuntimeError("Supabase deshabilitado; no se puede guardar remotamente.")
 
-        client = self._get_client()
-        bucket = client.storage.from_(SupabaseConfig.SUPABASE_BUCKET_NAME)
+        bucket = self._get_bucket()
         path = SupabaseConfig.portfolio_json_path()
 
         temp_file = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
@@ -98,14 +213,17 @@ class SupabaseStorage:
 
         try:
             with open(temp_path, "rb") as file_obj:
-                bucket.upload(
+                response = bucket.upload(
                     path,
                     file_obj,
                     {
                         "content-type": "application/json",
-                        "upsert": "true",
+                        "upsert": True,
                     },
                 )
+            error_message = self._extract_error(response)
+            if error_message:
+                raise RuntimeError(error_message)
         finally:
             try:
                 temp_path.unlink(missing_ok=True)
@@ -123,8 +241,7 @@ class SupabaseStorage:
             logger.debug("Archivo no encontrado para subir a Supabase: %s", local_path)
             return None
 
-        client = self._get_client()
-        bucket = client.storage.from_(SupabaseConfig.SUPABASE_BUCKET_NAME)
+        bucket = self._get_bucket()
         remote_path = SupabaseConfig.remote_chart_path_for(local_path)
 
         mime_type, _ = guess_type(str(local_path))
@@ -133,14 +250,18 @@ class SupabaseStorage:
         logger.info("Subiendo gráfico a Supabase: %s/%s", SupabaseConfig.SUPABASE_BUCKET_NAME, remote_path)
 
         with open(local_path, "rb") as file_obj:
-            bucket.upload(
+            response = bucket.upload(
                 remote_path,
                 file_obj,
                 {
                     "content-type": content_type,
-                    "upsert": "true",
+                    "upsert": True,
                 },
             )
+
+        error_message = self._extract_error(response)
+        if error_message:
+            raise RuntimeError(error_message)
 
         public_url: Optional[str] = None
         try:
@@ -166,8 +287,7 @@ class SupabaseStorage:
             logger.debug("Supabase deshabilitado; no se descarga %s", remote_path)
             return None
 
-        client = self._get_client()
-        bucket = client.storage.from_(SupabaseConfig.SUPABASE_BUCKET_NAME)
+        bucket = self._get_bucket()
 
         try:
             return bucket.download(remote_path)
