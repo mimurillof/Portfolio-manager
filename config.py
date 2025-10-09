@@ -125,7 +125,8 @@ CHART_CONFIG = {
         "neutral": "#3b82f6",   # blue
         "background": "#ffffff",
         "text": "#1f2937",
-    }
+    },
+    "enable_png_export": os.getenv("PORTFOLIO_ENABLE_PNG", "true").lower() == "true",
 }
 
 # Archivos de salida (fallback local)

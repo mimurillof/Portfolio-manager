@@ -1,13 +1,18 @@
 """
 Módulo para generar gráficos con Plotly
 """
-import plotly.graph_objects as go
-import plotly.express as px
-from plotly.subplots import make_subplots
-import pandas as pd
-from typing import Dict, List, Optional
-from pathlib import Path
 import logging
+from pathlib import Path
+from typing import Dict, List, Optional
+
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+
+try:  # Kaleido es opcional; en producción reutilizamos una sola instancia
+    from kaleido.scopes.plotly import PlotlyScope  # type: ignore
+except ImportError:  # pragma: no cover - en entornos sin soporte se ignora el PNG
+    PlotlyScope = None  # type: ignore
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -19,6 +24,36 @@ class ChartGenerator:
     def __init__(self, config: Dict):
         self.config = config
         self.colors = config.get("colors", {})
+        self.enable_png = bool(config.get("enable_png_export", True))
+        self._png_scope: Optional["PlotlyScope"] = None
+
+    def _get_png_scope(self) -> Optional["PlotlyScope"]:
+        if not self.enable_png or PlotlyScope is None:
+            return None
+        if self._png_scope is None:
+            try:
+                self._png_scope = PlotlyScope(
+                    plotlyjs="package_data",
+                    mathjax="package_data",
+                    topojson="package_data",
+                )
+            except Exception as exc:  # pragma: no cover - fallback seguro
+                logger.warning("No se pudo inicializar Kaleido Scope: %s", exc)
+                self.enable_png = False
+                return None
+        return self._png_scope
+
+    def _export_png(self, fig: go.Figure, output_path: Path) -> None:
+        scope = self._get_png_scope()
+        if not scope:
+            return
+        try:
+            png_bytes = scope.transform(fig, format="png")
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(png_bytes)
+            logger.info("PNG guardado en: %s", output_path)
+        except Exception as exc:
+            logger.warning("Fallo al exportar PNG en %s: %s", output_path, exc)
     
     def create_portfolio_performance_chart(
         self, 
@@ -90,12 +125,8 @@ class ChartGenerator:
             logger.info(f"Gráfico HTML guardado en: {output_html}")
             
             # Guardar PNG si se especifica
-            if output_png:
-                try:
-                    fig.write_image(str(output_png))
-                    logger.info(f"Gráfico PNG guardado en: {output_png}")
-                except Exception as e:
-                    logger.warning(f"No se pudo guardar PNG (requiere kaleido): {e}")
+            if output_png and self.enable_png:
+                self._export_png(fig, Path(output_png))
             
             return str(output_html)
         
@@ -265,12 +296,8 @@ class ChartGenerator:
             logger.info(f"Gráfico de {symbol} guardado en: {output_html}")
             
             # Guardar PNG si se especifica
-            if output_png:
-                try:
-                    fig.write_image(str(output_png))
-                    logger.info(f"PNG de {symbol} guardado en: {output_png}")
-                except Exception as e:
-                    logger.warning(f"No se pudo guardar PNG para {symbol}: {e}")
+            if output_png and self.enable_png:
+                self._export_png(fig, Path(output_png))
             
             return str(output_html)
         
@@ -364,11 +391,8 @@ class ChartGenerator:
             logger.info(f"Gráfico de distribución guardado en: {output_html}")
             
             # Guardar PNG si se especifica
-            if output_png:
-                try:
-                    fig.write_image(str(output_png))
-                except Exception as e:
-                    logger.warning(f"No se pudo guardar PNG: {e}")
+            if output_png and self.enable_png:
+                self._export_png(fig, Path(output_png))
             
             return str(output_html)
         
