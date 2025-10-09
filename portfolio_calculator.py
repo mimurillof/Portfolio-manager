@@ -330,40 +330,47 @@ class PortfolioCalculator:
             )
 
         viewed_list = sort_bucket(market_data_map["viewed"], key="volume", reverse=True)
-        watchlist_list = list(market_data_map["watchlist"].values())
+        watchlist_list = sort_bucket(market_data_map["watchlist"], key="change_percent", reverse=True)
         gainers_list = sort_bucket(market_data_map["gainers"], key="change_percent", reverse=True)
         losers_list = sort_bucket(market_data_map["losers"], key="change_percent", reverse=False)
         active_list = sort_bucket(market_data_map["active"], key="volume", reverse=True)
 
-        combined_map: Dict[str, Dict[str, Any]] = {}
-        bucket_visit_order = ("gainers", "losers", "active", "viewed", "watchlist")
-        for bucket_name in bucket_visit_order:
-            combined_map.update(market_data_map[bucket_name])
+        def merge_unique(buckets: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+            merged: List[Dict[str, Any]] = []
+            seen: set[str] = set()
 
-        all_list = list(combined_map.values())
+            for bucket in buckets:
+                for entry in bucket:
+                    symbol = entry.get("symbol")
+                    if not symbol or symbol in seen:
+                        continue
+                    merged.append(entry)
+                    seen.add(symbol)
+            return merged
 
-        def _impact_key(entry: Dict[str, Any]) -> tuple:
-            change = entry.get("change_percent")
-            volume = entry.get("volume")
-            market_cap = entry.get("market_cap")
-
-            change_score = abs(change) if isinstance(change, (int, float)) else 0.0
-            volume_score = float(volume) if isinstance(volume, (int, float)) else 0.0
-            market_cap_score = float(market_cap) if isinstance(market_cap, (int, float)) else 0.0
-
-            return (change_score, volume_score, market_cap_score)
-
-        all_list.sort(key=_impact_key, reverse=True)
-
-        watchlist_symbols = {item.get("symbol") for item in watchlist if item.get("symbol")}
-        existing_symbols = {entry.get("symbol") for entry in all_list}
-        missing_watchlist = [
-            market_data_map["watchlist"][symbol]
-            for symbol in watchlist_symbols - existing_symbols
-            if symbol in market_data_map["watchlist"]
+        priority_buckets = [
+            gainers_list,
+            losers_list,
+            active_list,
+            viewed_list,
         ]
-        if missing_watchlist:
-            all_list.extend(missing_watchlist)
+
+        all_list = merge_unique(priority_buckets)
+
+        if not all_list:
+            all_list = merge_unique([watchlist_list])
+
+        # Añadir elementos de la watchlist sólo como relleno si aún faltan entradas.
+        if len(all_list) < top_n * 2:
+            watch_symbols = {entry.get("symbol") for entry in all_list}
+            for item in watchlist_list:
+                symbol = item.get("symbol")
+                if not symbol or symbol in watch_symbols:
+                    continue
+                all_list.append(item)
+                watch_symbols.add(symbol)
+                if len(all_list) >= top_n * 2:
+                    break
 
         response = {
             "all": all_list[: top_n * 2],
