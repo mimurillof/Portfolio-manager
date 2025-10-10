@@ -18,13 +18,8 @@ from portfolio_manager import PortfolioManager
 from pathlib import Path
 from config import get_logger
 
-def main():
+def main(period="6mo"):
     """Genera un reporte completo del portfolio."""
-    # Determinar el periodo
-    period = "6mo"
-    if len(sys.argv) > 1:
-        period = sys.argv[1]
-    
     print("=" * 80)
     print("GENERADOR DE REPORTE DE PORTFOLIO CON WEB SCRAPING")
     print("=" * 80)
@@ -129,5 +124,7 @@ if __name__ == "__main__":
         run_worker()
     else:
         # Ejecutar una sola vez (modo manual)
-        main()
+        # Determinar el periodo desde argumentos
+        period = sys.argv[1] if len(sys.argv) > 1 else "6mo"
+        main(period=period)
 
