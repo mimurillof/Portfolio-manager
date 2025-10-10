@@ -291,4 +291,4 @@ Este módulo es parte del proyecto Portfolio Manager.
 
 ## 👥 Contribuciones
 
-Para agregar nuevas funcionalidades o mejorar el código, seguir la estructura modular existente.
+Para agregar nuevas funcionalidades o mejorar el código, seguir la estructura modular existente. 
