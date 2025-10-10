@@ -11,13 +11,11 @@ import logging
 import os
 import sys
 import time
+from datetime import datetime, time as time_cls
 from pathlib import Path
-from typing import Any
+from typing import Optional, Set
 
-try:
-    import schedule as schedule_module
-except ImportError:  # pragma: no cover - handled en tiempo de ejecución al iniciar worker
-    schedule_module = None
+import pytz
 
 from portfolio_manager import PortfolioManager
 
@@ -26,6 +24,70 @@ LOGGER = logging.getLogger("portfolio.generate_report")
 
 DEFAULT_PERIOD = os.getenv("PORTFOLIO_DEFAULT_PERIOD", "6mo")
 DEFAULT_INTERVAL_MINUTES = int(os.getenv("PORTFOLIO_WORKER_INTERVAL_MINUTES", "15"))
+TRADING_WINDOW_RAW = os.getenv("PORTFOLIO_TRADING_WINDOW", "09:30-16:00")
+TRADING_TZ_NAME = os.getenv("PORTFOLIO_TRADING_TZ", "America/New_York")
+TRADING_DAYS_RAW = os.getenv("PORTFOLIO_TRADING_DAYS", "0-4")
+
+
+def _parse_trading_window(window: str) -> Optional[tuple[time_cls, time_cls]]:
+    window = (window or "").strip()
+    if not window or window.lower() == "siempre" or window.lower() == "always":
+        return None
+
+    try:
+        start_str, end_str = [chunk.strip() for chunk in window.split("-", 1)]
+        start_time = datetime.strptime(start_str, "%H:%M").time()
+        end_time = datetime.strptime(end_str, "%H:%M").time()
+        return start_time, end_time
+    except Exception:  # pylint: disable=broad-except
+        LOGGER.warning(
+            "No se pudo interpretar PORTFOLIO_TRADING_WINDOW='%s'. Se ejecutará siempre.",
+            window,
+        )
+        return None
+
+
+def _parse_trading_days(raw_days: str) -> Optional[Set[int]]:
+    raw_days = (raw_days or "").strip()
+    if not raw_days:
+        return None
+
+    days: Set[int] = set()
+    for chunk in raw_days.split(","):
+        part = chunk.strip()
+        if not part:
+            continue
+        if "-" in part:
+            try:
+                start_str, end_str = part.split("-", 1)
+                start = int(start_str)
+                end = int(end_str)
+                if start > end:
+                    start, end = end, start
+                days.update(range(start, end + 1))
+            except ValueError:
+                LOGGER.warning("Rango de días inválido en PORTFOLIO_TRADING_DAYS: '%s'", part)
+        else:
+            try:
+                days.add(int(part))
+            except ValueError:
+                LOGGER.warning("Día inválido en PORTFOLIO_TRADING_DAYS: '%s'", part)
+    if not days:
+        return None
+    invalid = [d for d in days if d < 0 or d > 6]
+    if invalid:
+        LOGGER.warning("Días fuera de rango (0-6) en PORTFOLIO_TRADING_DAYS: %s", invalid)
+        days = {d for d in days if 0 <= d <= 6}
+    return days or None
+
+
+TRADING_WINDOW = _parse_trading_window(TRADING_WINDOW_RAW)
+TRADING_DAYS = _parse_trading_days(TRADING_DAYS_RAW)
+try:
+    TRADING_TZ = pytz.timezone(TRADING_TZ_NAME)
+except Exception:  # pylint: disable=broad-except
+    LOGGER.warning("Zona horaria inválida '%s'; se usará UTC.", TRADING_TZ_NAME)
+    TRADING_TZ = pytz.UTC
 
 
 def _configure_logging() -> None:
@@ -94,25 +156,42 @@ def run_report(period: str, emit_console: bool = True) -> bool:
         return False
 
 
-def _schedule_job(schedule_api: Any) -> None:
-    """Ejecuta el loop de schedule hasta que el proceso sea detenido."""
-    LOGGER.info("Iniciando loop del worker de generación de reportes")
-    try:
-        while True:
-            schedule_api.run_pending()
-            time.sleep(1)
-    except KeyboardInterrupt:  # pragma: no cover - interacción manual
-        LOGGER.info("Worker detenido manualmente")
+def _within_trading_window(reference: Optional[datetime] = None) -> bool:
+    if TRADING_WINDOW is None and TRADING_DAYS is None:
+        return True
+
+    now = reference.astimezone(TRADING_TZ) if reference else datetime.now(TRADING_TZ)
+
+    if TRADING_DAYS is not None and now.weekday() not in TRADING_DAYS:
+        return False
+
+    if TRADING_WINDOW is None:
+        return True
+
+    start, end = TRADING_WINDOW
+    current_time = now.time()
+
+    if start <= end:
+        return start <= current_time <= end
+    # Ventana que cruza medianoche (p.ej., 22:00-02:00)
+    return current_time >= start or current_time <= end
+
+
+def _sleep_with_heartbeat(target_monotonic: float) -> None:
+    """Duerme en tramos cortos para permitir logs de vida y señales."""
+    heartbeat = int(os.getenv("PORTFOLIO_WORKER_HEARTBEAT_SECONDS", "30"))
+    heartbeat = max(5, min(heartbeat, 300))
+
+    while True:
+        remaining = target_monotonic - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(heartbeat, remaining))
+        LOGGER.debug("Worker en espera; faltan %.1f segundos para la próxima ejecución", max(0.0, remaining - heartbeat))
 
 
 def run_worker(period: str, interval_minutes: int, run_immediately: bool) -> None:
     """Configura y mantiene el worker en ejecución."""
-    if schedule_module is None:
-        raise RuntimeError(
-            "La librería 'schedule' es requerida en modo worker. Asegúrate de "
-            "agregarla a requirements.txt e instalarla antes de desplegar."
-        )
-
     if interval_minutes <= 0:
         raise ValueError("Intervalo inválido: debe ser mayor a 0 minutos")
 
@@ -123,13 +202,36 @@ def run_worker(period: str, interval_minutes: int, run_immediately: bool) -> Non
         run_immediately,
     )
 
-    if run_immediately:
-        LOGGER.info("Ejecutando generación inicial antes del schedule")
-        run_report(period, emit_console=False)
+    interval_seconds = interval_minutes * 60
+    LOGGER.info(
+        "Ventana operativa: %s | Días: %s | Zona horaria: %s",
+        TRADING_WINDOW_RAW or "siempre",
+        TRADING_DAYS_RAW or "todos",
+        TRADING_TZ.zone,
+    )
 
-    schedule_module.clear()
-    schedule_module.every(interval_minutes).minutes.do(run_report, period, False)
-    _schedule_job(schedule_module)
+    if run_immediately:
+        LOGGER.info("Ejecutando generación inicial antes del loop")
+        if _within_trading_window():
+            run_report(period, emit_console=False)
+        else:
+            LOGGER.info("Fuera del horario configurado; se omite corrida inicial")
+
+    next_run = time.monotonic() + interval_seconds
+    LOGGER.info("Worker iniciado; siguiente ejecución en %s minutos", interval_minutes)
+
+    try:
+        while True:
+            _sleep_with_heartbeat(next_run)
+            should_run = _within_trading_window()
+            if should_run:
+                LOGGER.info("Iniciando ejecución programada del reporte")
+                run_report(period, emit_console=False)
+            else:
+                LOGGER.info("Fuera del horario configurado; se omite la ejecución programada")
+            next_run = time.monotonic() + interval_seconds
+    except KeyboardInterrupt:  # pragma: no cover - interacción manual
+        LOGGER.info("Worker detenido manualmente")
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
