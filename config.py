@@ -2,6 +2,7 @@
 Configuración para el Portfolio Manager
 """
 import os
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -140,3 +141,35 @@ OUTPUT_FILES = {
 
 # Crear subdirectorio para gráficos de assets
 (CHARTS_DIR / "assets").mkdir(exist_ok=True)
+
+
+def get_logger(name: str) -> logging.Logger:
+    """
+    Crea y configura un logger.
+    
+    Args:
+        name: Nombre del logger (usualmente __name__)
+    
+    Returns:
+        Logger configurado
+    """
+    logger = logging.getLogger(name)
+    
+    # Solo configurar si no tiene handlers (evitar duplicados)
+    if not logger.handlers:
+        logger.setLevel(logging.INFO)
+        
+        # Handler para consola
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.INFO)
+        
+        # Formato
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        console_handler.setFormatter(formatter)
+        
+        logger.addHandler(console_handler)
+    
+    return logger
