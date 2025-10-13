@@ -29,9 +29,9 @@ class PortfolioCalculator:
         Returns:
             Diccionario con métricas del portafolio
         """
-        total_value = 0
-        total_change = 0
-        total_change_absolute = 0
+        total_value = 0.0
+        total_change = 0.0
+        total_change_absolute = 0.0
         assets_data = []
         
         for asset in assets:
@@ -45,7 +45,9 @@ class PortfolioCalculator:
                 continue
             
             position_value = info["current_price"] * units
-            position_change = position_value * (info["change_percent"] / 100)
+            raw_change_percent = info.get("change_percent")
+            change_percent = float(raw_change_percent) if isinstance(raw_change_percent, (int, float)) else 0.0
+            position_change = position_value * (change_percent / 100)
             
             total_value += position_value
             total_change_absolute += position_change
@@ -59,7 +61,7 @@ class PortfolioCalculator:
                 "units": units,
                 "current_price": info["current_price"],
                 "position_value": position_value,
-                "change_percent": info["change_percent"],
+                "change_percent": change_percent,
                 "change_absolute": position_change,
                 "logo_url": info.get("logo_url"),
                 "market_cap": info["market_cap"],
@@ -67,8 +69,9 @@ class PortfolioCalculator:
                 "weekly_performance": weekly_perf,
             })
         
-        if total_value > 0:
-            total_change = (total_change_absolute / (total_value - total_change_absolute)) * 100
+        previous_total = total_value - total_change_absolute
+        if previous_total > 0:
+            total_change = (total_change_absolute / previous_total) * 100
         
         return {
             "total_value": total_value,
@@ -178,28 +181,47 @@ class PortfolioCalculator:
         """
         if performance_df.empty:
             return {}
-
         values = performance_df['portfolio_value'].to_numpy(dtype=float)
-        
-        # Calcular retornos
-        returns = np.diff(values) / values[:-1]
-        
-        # Métricas
-        total_return = (values[-1] - values[0]) / values[0] * 100 if values[0] > 0 else 0
-        volatility = np.std(returns) * np.sqrt(252) * 100  # Anualizada
-        sharpe_ratio = (np.mean(returns) / np.std(returns) * np.sqrt(252)) if np.std(returns) > 0 else 0
-        
-        # Máximo drawdown
-        cumulative = (1 + returns).cumprod()
+        values = values[np.isfinite(values)]
+
+        if values.size < 2:
+            return {
+                "total_return_percent": 0.0,
+                "volatility_percent": 0.0,
+                "sharpe_ratio": 0.0,
+                "max_drawdown_percent": 0.0,
+            }
+
+        deltas = np.diff(values)
+        denominators = np.where(values[:-1] != 0, values[:-1], np.nan)
+        valid_mask = np.isfinite(denominators) & (denominators != 0)
+        returns = np.divide(deltas, denominators, out=np.zeros_like(deltas, dtype=float), where=valid_mask)
+        returns = returns[np.isfinite(returns)]
+
+        if returns.size == 0:
+            return {
+                "total_return_percent": 0.0,
+                "volatility_percent": 0.0,
+                "sharpe_ratio": 0.0,
+                "max_drawdown_percent": 0.0,
+            }
+
+        total_return = ((values[-1] - values[0]) / values[0] * 100) if values[0] != 0 else 0.0
+        volatility = float(np.std(returns, ddof=1) * np.sqrt(252) * 100) if returns.size > 1 else 0.0
+        mean_return = float(np.mean(returns))
+        std_return = float(np.std(returns, ddof=1)) if returns.size > 1 else 0.0
+        sharpe_ratio = (mean_return / std_return * np.sqrt(252)) if std_return > 0 else 0.0
+
+        cumulative = np.cumprod(1 + returns)
         running_max = np.maximum.accumulate(cumulative)
-        drawdown = (cumulative - running_max) / running_max
-        max_drawdown = np.min(drawdown) * 100
-        
+        drawdown = np.divide(cumulative - running_max, running_max, out=np.zeros_like(cumulative), where=running_max != 0)
+        max_drawdown = float(np.min(drawdown) * 100) if drawdown.size else 0.0
+
         return {
-            "total_return_percent": total_return,
-            "volatility_percent": volatility,
-            "sharpe_ratio": sharpe_ratio,
-            "max_drawdown_percent": max_drawdown,
+            "total_return_percent": float(total_return) if np.isfinite(total_return) else 0.0,
+            "volatility_percent": volatility if np.isfinite(volatility) else 0.0,
+            "sharpe_ratio": float(sharpe_ratio) if np.isfinite(sharpe_ratio) else 0.0,
+            "max_drawdown_percent": max_drawdown if np.isfinite(max_drawdown) else 0.0,
         }
     
     def get_market_overview(

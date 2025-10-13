@@ -4,9 +4,11 @@ Orquesta todas las operaciones y genera los archivos de salida
 """
 import json
 import logging
+import math
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from datetime import datetime
+from numbers import Real
 
 from config import (
     PORTFOLIO_CONFIG,
@@ -59,7 +61,7 @@ class PortfolioManager:
                 logger.debug("No se pudo cargar portfolio_data local: %s", exc)
         return None
 
-    def generate_full_report(self, period: str = "6mo") -> Dict:
+    def generate_full_report(self, period: str = "6mo") -> Dict[str, Any]:
         """
         Genera un reporte completo del portafolio
         
@@ -161,11 +163,12 @@ class PortfolioManager:
         }
         
         # 9. Guardar datos en JSON/Supabase
-        self._save_portfolio_data(report)
+        sanitized_report = self._sanitize_for_json(report)
+        self._save_portfolio_data(sanitized_report)
         
         logger.info("Reporte completo generado exitosamente")
         
-        return report
+        return sanitized_report
     
     def _generate_charts(self, performance_df, assets_data: List[Dict]) -> Dict[str, str]:
         """
@@ -269,7 +272,23 @@ class PortfolioManager:
             if remote_info.get("public_url"):
                 charts_map[f"{key}_url"] = remote_info["public_url"]
     
-    def _save_portfolio_data(self, report: Dict) -> None:
+    def _sanitize_for_json(self, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: self._sanitize_for_json(val) for key, val in value.items()}
+        if isinstance(value, list):
+            return [self._sanitize_for_json(item) for item in value]
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, Real):
+            numeric = float(value)
+            if not math.isfinite(numeric):
+                return None
+            if isinstance(value, int):
+                return int(value)
+            return numeric
+        return value
+
+    def _save_portfolio_data(self, report: Dict[str, Any]) -> None:
         """
         Guarda los datos del portafolio en JSON
         
@@ -290,7 +309,7 @@ class PortfolioManager:
             except Exception as local_exc:
                 logger.error("Error guardando datos localmente: %s", local_exc)
     
-    def get_portfolio_summary(self) -> Dict:
+    def get_portfolio_summary(self) -> Dict[str, Any]:
         """
         Obtiene un resumen rápido del portafolio sin generar gráficos
         
@@ -309,14 +328,14 @@ class PortfolioManager:
             "timestamp": portfolio_summary["timestamp"],
         }
     
-    def get_market_data(self) -> Dict:
+    def get_market_data(self) -> Dict[str, Any]:
         """
         Obtiene datos del mercado (watchlist)
         
         Returns:
             Diccionario con datos de mercado
         """
-        overview = self.calculator.get_market_overview(
+        overview: Dict[str, Any] = self.calculator.get_market_overview(
             self.watchlist,
             use_persisted=False,
         )

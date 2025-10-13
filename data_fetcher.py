@@ -82,17 +82,17 @@ class DataFetcher:
         try:
             ticker = yf.Ticker(symbol)
             info = ticker.info or {}
-            
+
             # Intentar obtener el precio actual de diferentes campos
             price = info.get('currentPrice') or info.get('regularMarketPrice')
-            
+
             if price is None:
                 # Fallback: obtener el último precio del histórico
                 hist = ticker.history(period="1d")
                 if not hist.empty:
                     price = hist['Close'].iloc[-1]
-            
-            price_value = float(price) if price else None
+
+            price_value = float(price) if price not in (None, "") else None
             if cache_key in self.cache and isinstance(self.cache[cache_key], dict):
                 self.cache[cache_key]["current_price"] = price_value
             return price_value
@@ -147,11 +147,14 @@ class DataFetcher:
             hist = ticker.history(period="5d")
             current_price = self.get_current_price(symbol)
 
-            if current_price and len(hist) >= 2:
+            if current_price is not None and len(hist) >= 2:
                 previous_close = hist['Close'].iloc[-2]
-                change_percent = ((current_price - previous_close) / previous_close) * 100
+                if previous_close and previous_close != 0:
+                    change_percent = ((current_price - previous_close) / previous_close) * 100
+                else:
+                    change_percent = 0.0
             else:
-                change_percent = 0
+                change_percent = 0.0
 
             result = {
                 "symbol": symbol,
