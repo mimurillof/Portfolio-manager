@@ -61,28 +61,44 @@ class PortfolioManager:
                 logger.debug("No se pudo cargar portfolio_data local: %s", exc)
         return None
 
-    def generate_full_report(self, period: str = "6mo") -> Dict[str, Any]:
+    def generate_full_report(
+        self, 
+        period: str = "6mo",
+        assets_data: Optional[List[Dict]] = None,
+        user_id: Optional[str] = None
+    ) -> Dict[str, Any]:
         """
         Genera un reporte completo del portafolio
         
         Args:
             period: Periodo de tiempo para análisis histórico
+            assets_data: Lista de assets del portfolio. Si no se proporciona, usa PORTFOLIO_CONFIG
+            user_id: UUID del usuario (para almacenamiento en Supabase). Si no se proporciona,
+                    usa estructura legacy
         
         Returns:
             Diccionario con todos los datos del reporte
         """
         logger.info("Iniciando generación de reporte completo...")
         
+        # Determinar qué assets usar
+        if assets_data is None:
+            logger.info("Usando configuración hardcodeada de assets (PORTFOLIO_CONFIG)")
+            assets_to_process = self.portfolio_config["assets"]
+        else:
+            logger.info(f"Usando assets dinámicos desde base de datos ({len(assets_data)} assets)")
+            assets_to_process = assets_data
+        
         # 1. Calcular valor actual del portafolio
         portfolio_summary = self.calculator.calculate_portfolio_value(
-            self.portfolio_config["assets"]
+            assets_to_process
         )
         
         logger.info(f"Valor del portafolio: ${portfolio_summary['total_value']:,.2f}")
         
         # 2. Calcular rendimiento histórico
         performance_df = self.calculator.calculate_portfolio_performance(
-            self.portfolio_config["assets"],
+            assets_to_process,
             period=period
         )
         
@@ -134,13 +150,19 @@ class PortfolioManager:
         most_viewed_list = market_overview_sections.get("most_viewed") or all_list
         most_active_list = market_overview_sections.get("most_active") or all_list
         
-        # 7. Generar gráficos
-        generated_chart_paths = self._generate_charts(performance_df, portfolio_summary["assets"])
+        # 7. Generar gráficos (con user_id para storage dinámico)
+        generated_chart_paths = self._generate_charts(
+            performance_df, 
+            portfolio_summary["assets"], 
+            allocation,  # Pasar allocation ya calculado
+            user_id
+        )
         
         # 8. Compilar reporte completo
         report = {
             "generated_at": datetime.now().isoformat(),
             "period": period,
+            "user_id": user_id,  # Incluir user_id en el reporte
             "summary": {
                 "total_value": portfolio_summary["total_value"],
                 "total_change_percent": portfolio_summary["total_change_percent"],
@@ -162,21 +184,29 @@ class PortfolioManager:
             "charts": generated_chart_paths,
         }
         
-        # 9. Guardar datos en JSON/Supabase
+        # 9. Guardar datos en JSON/Supabase (con user_id para storage dinámico)
         sanitized_report = self._sanitize_for_json(report)
-        self._save_portfolio_data(sanitized_report)
+        self._save_portfolio_data(sanitized_report, user_id)
         
         logger.info("Reporte completo generado exitosamente")
         
         return sanitized_report
     
-    def _generate_charts(self, performance_df, assets_data: List[Dict]) -> Dict[str, str]:
+    def _generate_charts(
+        self, 
+        performance_df, 
+        assets_data: List[Dict],
+        allocation: List[Dict],  # Ya calculado previamente
+        user_id: Optional[str] = None
+    ) -> Dict[str, str]:
         """
         Genera todos los gráficos necesarios
         
         Args:
             performance_df: DataFrame con rendimiento del portafolio
             assets_data: Lista de datos de activos
+            allocation: Distribución de activos ya calculada
+            user_id: UUID del usuario (para almacenamiento dinámico)
         Returns:
             Diccionario con rutas locales y remotas de gráficos
         """
@@ -194,8 +224,8 @@ class PortfolioManager:
             "portfolio_performance_png": str(OUTPUT_FILES["portfolio_chart_png"]),
         }
 
-        self._upload_chart_if_enabled("portfolio_performance", OUTPUT_FILES["portfolio_chart_html"], charts_map)
-        self._upload_chart_if_enabled("portfolio_performance_png", OUTPUT_FILES["portfolio_chart_png"], charts_map)
+        self._upload_chart_if_enabled("portfolio_performance", OUTPUT_FILES["portfolio_chart_html"], charts_map, user_id)
+        self._upload_chart_if_enabled("portfolio_performance_png", OUTPUT_FILES["portfolio_chart_png"], charts_map, user_id)
         
         # Gráficos individuales de cada activo
         assets_charts_dir = OUTPUT_FILES["assets_charts_dir"]
@@ -240,29 +270,54 @@ class PortfolioManager:
                 intraday_interval=intraday_interval,
             )
 
-            self._upload_chart_if_enabled(f"asset_{symbol}_html", output_html, charts_map)
-            self._upload_chart_if_enabled(f"asset_{symbol}_png", output_png, charts_map)
+            self._upload_chart_if_enabled(f"asset_{symbol}_html", output_html, charts_map, user_id)
+            self._upload_chart_if_enabled(f"asset_{symbol}_png", output_png, charts_map, user_id)
         
-        # Gráfico de distribución
-        allocation = self.calculator.calculate_asset_allocation(assets_data)
+        # Gráfico de distribución (usa allocation ya calculado en generate_full_report)
         allocation_html = Path(OUTPUT_FILES["assets_charts_dir"]).parent / "allocation_chart.html"
         allocation_png = Path(OUTPUT_FILES["assets_charts_dir"]).parent / "allocation_chart.png"
         
         self.chart_generator.create_allocation_pie_chart(
-            allocation,
+            allocation,  # Usar el allocation pasado como parámetro
             allocation_html,
             allocation_png
         )
 
-        self._upload_chart_if_enabled("allocation_chart", allocation_html, charts_map)
-        self._upload_chart_if_enabled("allocation_chart_png", allocation_png, charts_map)
+        self._upload_chart_if_enabled("allocation_chart", allocation_html, charts_map, user_id)
+        self._upload_chart_if_enabled("allocation_chart_png", allocation_png, charts_map, user_id)
         
         logger.info("Gráficos generados exitosamente")
         return charts_map
 
-    def _upload_chart_if_enabled(self, key: str, path: Path, charts_map: Dict[str, str]) -> None:
+    def _upload_chart_if_enabled(
+        self, 
+        key: str, 
+        path: Path, 
+        charts_map: Dict[str, str],
+        user_id: Optional[str] = None
+    ) -> None:
+        # Verificar que el archivo existe y no está vacío
+        if not path.exists():
+            logger.warning("Archivo de gráfico no existe, omitiendo subida: %s", path)
+            return
+        
+        # Si es PNG, verificar que fue generado recientemente (menos de 5 minutos)
+        if path.suffix.lower() == '.png':
+            from datetime import datetime, timedelta
+            file_modified = datetime.fromtimestamp(path.stat().st_mtime)
+            now = datetime.now()
+            
+            # Si el archivo tiene más de 5 minutos, es obsoleto (no se regeneró)
+            if now - file_modified > timedelta(minutes=5):
+                logger.warning(
+                    "Archivo PNG obsoleto (modificado %s), omitiendo subida: %s",
+                    file_modified.strftime("%Y-%m-%d %H:%M:%S"),
+                    path
+                )
+                return
+        
         try:
-            remote_info = self.storage.upload_chart_asset(path)
+            remote_info = self.storage.upload_chart_asset(path, user_id)
         except Exception as exc:  # pylint: disable=broad-except
             logger.warning("No se pudo subir gráfico '%s' a Supabase: %s", key, exc)
             return
@@ -288,15 +343,16 @@ class PortfolioManager:
             return numeric
         return value
 
-    def _save_portfolio_data(self, report: Dict[str, Any]) -> None:
+    def _save_portfolio_data(self, report: Dict[str, Any], user_id: Optional[str] = None) -> None:
         """
         Guarda los datos del portafolio en JSON
         
         Args:
             report: Diccionario con el reporte completo
+            user_id: UUID del usuario (para estructura dinámica en Supabase)
         """
         try:
-            self.storage.save_portfolio_json(report)
+            self.storage.save_portfolio_json(report, user_id)
             logger.info("Datos guardados en Supabase")
             self._existing_portfolio_data = report
         except Exception as exc:

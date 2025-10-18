@@ -51,37 +51,82 @@ class SupabaseConfig:
         return bool(cls.SUPABASE_URL and cls.get_supabase_key()) and cls.ENABLE_SUPABASE_UPLOAD
 
     @classmethod
-    def portfolio_json_path(cls) -> str:
+    def portfolio_json_path(cls, user_id: Optional[str] = None) -> str:
+        """
+        Genera la ruta del archivo JSON del portfolio.
+        
+        Args:
+            user_id: UUID del usuario. Si se proporciona, usa estructura {user_id}/portfolio_data.json
+                    Si no se proporciona, usa el prefijo legacy SUPABASE_BASE_PREFIX
+        
+        Returns:
+            Ruta relativa en el bucket
+        """
+        if user_id:
+            # Nueva estructura plana: {user_id}/portfolio_data.json
+            return f"{user_id}/{cls.SUPABASE_PORTFOLIO_FILENAME}".strip("/")
+        
+        # Fallback legacy para compatibilidad
         prefix = (cls.SUPABASE_BASE_PREFIX or "").strip("/")
         if prefix:
             return f"{prefix}/{cls.SUPABASE_PORTFOLIO_FILENAME}".strip("/")
         return cls.SUPABASE_PORTFOLIO_FILENAME
 
     @classmethod
-    def charts_prefix(cls) -> str:
+    def charts_prefix(cls, user_id: Optional[str] = None) -> str:
+        """
+        Obtiene el prefijo para gráficos.
+        
+        Args:
+            user_id: UUID del usuario. Si se proporciona, usa estructura {user_id}/
+        
+        Returns:
+            Prefijo para gráficos (sin subcarpetas adicionales)
+        """
+        if user_id:
+            # Estructura plana: archivos directamente en {user_id}/
+            return f"{user_id}"
+        
+        # Fallback legacy
         return (cls.SUPABASE_BASE_PREFIX2 or "Graficos").strip("/")
 
     @classmethod
-    def build_chart_path(cls, relative_path: str) -> str:
-        relative_clean = relative_path.strip("/")
-        prefix = cls.charts_prefix()
+    def build_chart_path(cls, relative_path: str, user_id: Optional[str] = None) -> str:
+        """
+        Construye la ruta completa para un gráfico.
+        
+        Args:
+            relative_path: Ruta relativa del gráfico
+            user_id: UUID del usuario
+        
+        Returns:
+            Ruta completa en el bucket (plana, sin subdirectorios)
+        """
+        # Extraer solo el nombre del archivo, sin subdirectorios
+        from pathlib import Path as PathLib
+        filename = PathLib(relative_path).name
+        
+        prefix = cls.charts_prefix(user_id)
         if prefix:
-            return f"{prefix}/{relative_clean}".strip("/")
-        return relative_clean
+            return f"{prefix}/{filename}".strip("/")
+        return filename
 
     @classmethod
-    def remote_chart_path_for(cls, local_path: Path) -> str:
-        try:
-            relative = local_path.relative_to(CHARTS_DIR)
-        except ValueError:
-            relative = local_path.name
+    def remote_chart_path_for(cls, local_path: Path, user_id: Optional[str] = None) -> str:
+        """
+        Genera la ruta remota para un gráfico local.
+        
+        Args:
+            local_path: Ruta local del archivo
+            user_id: UUID del usuario
+        
+        Returns:
+            Ruta remota en el bucket (solo {user_id}/filename.ext)
+        """
+        # Extraer solo el nombre del archivo
+        filename = local_path.name
 
-        if isinstance(relative, Path):
-            relative_str = relative.as_posix()
-        else:
-            relative_str = str(relative)
-
-        return cls.build_chart_path(relative_str)
+        return cls.build_chart_path(filename, user_id)
 
 
 # Portfolio configuration

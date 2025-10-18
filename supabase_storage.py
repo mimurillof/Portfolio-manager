@@ -164,15 +164,22 @@ class SupabaseStorage:
         self._ensure_bucket_exists(client)
         return client.storage.from_(SupabaseConfig.SUPABASE_BUCKET_NAME)
 
-    def load_portfolio_json(self) -> Optional[Dict[str, Any]]:
-        """Descarga el JSON del portafolio desde Supabase Storage."""
-
+    def load_portfolio_json(self, user_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """
+        Descarga el JSON del portafolio desde Supabase Storage.
+        
+        Args:
+            user_id: UUID del usuario. Si se proporciona, busca en {user_id}/Informes/
+        
+        Returns:
+            Diccionario con los datos del portfolio o None
+        """
         if not self._is_enabled():
             logger.debug("Supabase deshabilitado; se omite descarga remota.")
             return None
 
         bucket = self._get_bucket()
-        path = SupabaseConfig.portfolio_json_path()
+        path = SupabaseConfig.portfolio_json_path(user_id)
 
         logger.info("Descargando portafolio desde Supabase: %s/%s", SupabaseConfig.SUPABASE_BUCKET_NAME, path)
 
@@ -188,14 +195,19 @@ class SupabaseStorage:
             logger.error("No se pudo descargar JSON desde Supabase: %s", exc)
             return None
 
-    def save_portfolio_json(self, data: Dict[str, Any]) -> None:
-        """Guarda el JSON del portafolio en Supabase Storage mediante upsert."""
-
+    def save_portfolio_json(self, data: Dict[str, Any], user_id: Optional[str] = None) -> None:
+        """
+        Guarda el JSON del portafolio en Supabase Storage mediante upsert.
+        
+        Args:
+            data: Datos del portfolio a guardar
+            user_id: UUID del usuario. Si se proporciona, guarda en {user_id}/Informes/
+        """
         if not self._is_enabled():
             raise RuntimeError("Supabase deshabilitado; no se puede guardar remotamente.")
 
         bucket = self._get_bucket()
-        path = SupabaseConfig.portfolio_json_path()
+        path = SupabaseConfig.portfolio_json_path(user_id)
 
         temp_file = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
         try:
@@ -230,9 +242,17 @@ class SupabaseStorage:
             except Exception:  # pragma: no cover - limpieza best effort
                 pass
 
-    def upload_chart_asset(self, local_path: Path) -> Optional[Dict[str, str]]:
-        """Sube un archivo de gráfico (HTML/PNG) al prefijo configurado."""
-
+    def upload_chart_asset(self, local_path: Path, user_id: Optional[str] = None) -> Optional[Dict[str, str]]:
+        """
+        Sube un archivo de gráfico (HTML/PNG) al prefijo configurado.
+        
+        Args:
+            local_path: Ruta local del archivo a subir
+            user_id: UUID del usuario. Si se proporciona, guarda en {user_id}/Graficos/
+        
+        Returns:
+            Diccionario con path y public_url del archivo subido
+        """
         if not self._is_enabled():
             logger.debug("Supabase deshabilitado; no se sube %s", local_path)
             return None
@@ -242,7 +262,7 @@ class SupabaseStorage:
             return None
 
         bucket = self._get_bucket()
-        remote_path = SupabaseConfig.remote_chart_path_for(local_path)
+        remote_path = SupabaseConfig.remote_chart_path_for(local_path, user_id)
 
         mime_type, _ = guess_type(str(local_path))
         content_type = mime_type or "application/octet-stream"
