@@ -238,6 +238,9 @@ class PortfolioManager:
         # Gráficos individuales de cada activo
         assets_charts_dir = OUTPUT_FILES["assets_charts_dir"]
         
+        # Importar función de sanitización para usar en claves del charts_map
+        from config import SupabaseConfig
+        
         for asset in assets_data:
             symbol = asset["symbol"]
 
@@ -278,8 +281,10 @@ class PortfolioManager:
                 intraday_interval=intraday_interval,
             )
 
-            self._upload_chart_if_enabled(f"asset_{symbol}_html", output_html, charts_map, user_id)
-            self._upload_chart_if_enabled(f"asset_{symbol}_png", output_png, charts_map, user_id)
+            # Usar símbolo sanitizado para las claves en charts_map (para consistencia con Supabase)
+            sanitized_symbol = SupabaseConfig.sanitize_filename_for_storage(symbol)
+            self._upload_chart_if_enabled(f"asset_{sanitized_symbol}_html", output_html, charts_map, user_id)
+            self._upload_chart_if_enabled(f"asset_{sanitized_symbol}_png", output_png, charts_map, user_id)
         
         # Gráfico de distribución (usa allocation ya calculado en generate_full_report)
         allocation_html = Path(OUTPUT_FILES["assets_charts_dir"]).parent / "allocation_chart.html"
