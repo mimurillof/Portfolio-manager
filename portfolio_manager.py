@@ -38,15 +38,23 @@ class PortfolioManager:
         self.storage = SupabaseStorage()
     
         self._existing_portfolio_data: Optional[Dict] = None
+        self._current_user_id: Optional[str] = None
     
-    def _load_existing_portfolio_data(self) -> Optional[Dict]:
-        if self._existing_portfolio_data is not None:
+    def _load_existing_portfolio_data(self, user_id: Optional[str] = None) -> Optional[Dict]:
+        """
+        Carga datos existentes del portfolio, priorizando datos de Supabase.
+        
+        Args:
+            user_id: UUID del usuario para cargar datos específicos
+        """
+        if self._existing_portfolio_data is not None and self._current_user_id == user_id:
             return self._existing_portfolio_data
 
         try:
-            data = self.storage.load_portfolio_json()
+            data = self.storage.load_portfolio_json(user_id)
             if data:
                 self._existing_portfolio_data = data
+                self._current_user_id = user_id
                 return data
         except Exception as exc:
             logger.warning("No se pudo cargar datos desde Supabase: %s", exc)
@@ -140,7 +148,7 @@ class PortfolioManager:
         # 6. Obtener datos de mercado (Watchlist)
         market_overview_sections = self.calculator.get_market_overview(
             self.watchlist or [],
-            source_data=self._load_existing_portfolio_data(),
+            source_data=self._load_existing_portfolio_data(user_id),
             use_persisted=False,
         )
         
@@ -355,6 +363,7 @@ class PortfolioManager:
             self.storage.save_portfolio_json(report, user_id)
             logger.info("Datos guardados en Supabase")
             self._existing_portfolio_data = report
+            self._current_user_id = user_id
         except Exception as exc:
             logger.warning("No se pudo guardar en Supabase: %s", exc)
             try:
@@ -362,6 +371,7 @@ class PortfolioManager:
                     json.dump(report, f, indent=2, ensure_ascii=False, default=str)
                 logger.info(f"Datos guardados localmente en: {OUTPUT_FILES['portfolio_data']}")
                 self._existing_portfolio_data = report
+                self._current_user_id = user_id
             except Exception as local_exc:
                 logger.error("Error guardando datos localmente: %s", local_exc)
     

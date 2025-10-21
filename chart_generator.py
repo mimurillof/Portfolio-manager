@@ -9,11 +9,6 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 
-try:  # Kaleido es opcional; en producción reutilizamos una sola instancia
-    from kaleido.scopes.plotly import PlotlyScope  # type: ignore
-except ImportError:  # pragma: no cover - en entornos sin soporte se ignora el PNG
-    PlotlyScope = None  # type: ignore
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -25,32 +20,22 @@ class ChartGenerator:
         self.config = config
         self.colors = config.get("colors", {})
         self.enable_png = bool(config.get("enable_png_export", True))
-        self._png_scope: Optional["PlotlyScope"] = None
-
-    def _get_png_scope(self) -> Optional["PlotlyScope"]:
-        if not self.enable_png or PlotlyScope is None:
-            return None
-        if self._png_scope is None:
-            try:
-                self._png_scope = PlotlyScope(
-                    plotlyjs="package_data",
-                    mathjax="package_data",
-                    topojson="package_data",
-                )
-            except Exception as exc:  # pragma: no cover - fallback seguro
-                logger.warning("No se pudo inicializar Kaleido Scope: %s", exc)
-                self.enable_png = False
-                return None
-        return self._png_scope
 
     def _export_png(self, fig: go.Figure, output_path: Path) -> None:
-        scope = self._get_png_scope()
-        if not scope:
+        """
+        Exporta una figura de Plotly a PNG usando el método nativo write_image.
+        
+        Args:
+            fig: Figura de Plotly a exportar
+            output_path: Ruta donde guardar el PNG
+        """
+        if not self.enable_png:
             return
+        
         try:
-            png_bytes = scope.transform(fig, format="png")
             output_path.parent.mkdir(parents=True, exist_ok=True)
-            output_path.write_bytes(png_bytes)
+            # Usar el método nativo de Plotly (requiere kaleido instalado)
+            fig.write_image(str(output_path), width=self.config.get("width", 1566), height=self.config.get("height", 365))
             logger.info("PNG guardado en: %s", output_path)
         except Exception as exc:
             logger.warning("Fallo al exportar PNG en %s: %s", output_path, exc)
