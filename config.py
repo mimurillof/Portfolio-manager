@@ -112,21 +112,69 @@ class SupabaseConfig:
         return filename
 
     @classmethod
+    def sanitize_filename_for_storage(cls, filename: str) -> str:
+        """
+        Sanitiza un nombre de archivo para ser compatible con Supabase Storage.
+        
+        Supabase Storage tiene restricciones sobre caracteres especiales en las claves.
+        Esta función reemplaza caracteres problemáticos por alternativas seguras.
+        
+        Args:
+            filename: Nombre de archivo original (ej: "^SPX_chart.html")
+        
+        Returns:
+            Nombre de archivo sanitizado (ej: "_CARET_SPX_chart.html")
+        
+        Examples:
+            >>> SupabaseConfig.sanitize_filename_for_storage("^SPX_chart.html")
+            "_CARET_SPX_chart.html"
+            >>> SupabaseConfig.sanitize_filename_for_storage("BTC-USD_chart.html")
+            "BTC-USD_chart.html"
+        """
+        # Mapeo de caracteres problemáticos a reemplazos seguros
+        replacements = {
+            '^': '_CARET_',     # Índices como ^SPX, ^GSPC
+            '<': '_LT_',        # Menor que
+            '>': '_GT_',        # Mayor que
+            ':': '_COLON_',     # Dos puntos
+            '"': '_QUOTE_',     # Comillas dobles
+            '\\': '_BSLASH_',   # Barra invertida
+            '|': '_PIPE_',      # Pipe
+            '?': '_QMARK_',     # Signo de interrogación
+            '*': '_STAR_',      # Asterisco
+        }
+        
+        sanitized = filename
+        for char, replacement in replacements.items():
+            sanitized = sanitized.replace(char, replacement)
+        
+        return sanitized
+    
+    @classmethod
     def remote_chart_path_for(cls, local_path: Path, user_id: Optional[str] = None) -> str:
         """
         Genera la ruta remota para un gráfico local.
+        Sanitiza el nombre del archivo para compatibilidad con Supabase Storage.
         
         Args:
             local_path: Ruta local del archivo
             user_id: UUID del usuario
         
         Returns:
-            Ruta remota en el bucket (solo {user_id}/filename.ext)
+            Ruta remota en el bucket (solo {user_id}/filename_sanitizado.ext)
+        
+        Examples:
+            >>> from pathlib import Path
+            >>> SupabaseConfig.remote_chart_path_for(Path("charts/assets/^SPX_chart.html"), "user-123")
+            "user-123/_CARET_SPX_chart.html"
         """
         # Extraer solo el nombre del archivo
         filename = local_path.name
+        
+        # Sanitizar el nombre del archivo para Supabase Storage
+        sanitized_filename = cls.sanitize_filename_for_storage(filename)
 
-        return cls.build_chart_path(filename, user_id)
+        return cls.build_chart_path(sanitized_filename, user_id)
 
 
 # Portfolio configuration

@@ -162,6 +162,40 @@ class TickerNormalizer:
         logger.info(f"Mapeo personalizado agregado: {original} → {corrected}")
     
     @classmethod
+    def is_ticker_valid_in_yfinance(cls, symbol: str) -> bool:
+        """
+        Verifica si un ticker es válido consultando directamente yfinance.
+        
+        Args:
+            symbol: Símbolo a verificar
+        
+        Returns:
+            True si el ticker existe en yfinance, False en caso contrario
+        """
+        try:
+            import yfinance as yf
+            ticker = yf.Ticker(symbol)
+            
+            # Intentar obtener información básica
+            info = ticker.info
+            
+            # Si info está vacío o solo tiene 'trailingPegRatio', el ticker no existe
+            if not info or (len(info) == 1 and 'trailingPegRatio' in info):
+                return False
+            
+            # Verificar que tenga datos mínimos (símbolo, currency, etc.)
+            if 'symbol' in info or 'currency' in info or 'regularMarketPrice' in info:
+                return True
+            
+            # Fallback: intentar obtener historial reciente
+            hist = ticker.history(period="5d")
+            return not hist.empty
+            
+        except Exception as e:
+            logger.debug(f"Error verificando ticker {symbol} en yfinance: {e}")
+            return False
+    
+    @classmethod
     def validate_symbol(cls, symbol: str) -> bool:
         """
         Valida si un símbolo tiene un formato razonable.
@@ -181,11 +215,12 @@ class TickerNormalizer:
         if len(symbol) < 1:
             return False
         
-        # Puede contener letras, números, guiones y puntos
-        if not re.match(r'^[A-Z0-9.\-]+$', symbol):
+        # Puede contener letras, números, guiones, puntos y ^ (para índices)
+        # Índices como ^SPX, ^GSPC, ^DJI, ^IXIC son válidos en Yahoo Finance
+        if not re.match(r'^[\^A-Z0-9.\-]+$', symbol):
             return False
         
-        # No puede empezar o terminar con guion o punto
+        # No puede empezar o terminar con guion o punto (pero sí con ^)
         if symbol.startswith(('-', '.')) or symbol.endswith(('-', '.')):
             return False
         

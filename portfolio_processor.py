@@ -27,7 +27,13 @@ class PortfolioProcessor:
     def _transform_assets_format(self, db_assets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Transforma los assets desde el formato de BD al formato esperado por PortfolioManager.
-        Incluye normalización de símbolos de tickers.
+        Incluye normalización inteligente de símbolos de tickers.
+        
+        ESTRATEGIA DE NORMALIZACIÓN:
+        1. Primero intenta validar el símbolo original contra yfinance
+        2. Si el símbolo es válido en yfinance, lo usa sin normalizar
+        3. Si falla, aplica normalización y vuelve a validar
+        4. Solo descarta el símbolo si ambos intentos fallan
         
         Formato BD:
             - asset_symbol: str
@@ -36,7 +42,7 @@ class PortfolioProcessor:
             - acquisition_date: date
         
         Formato esperado:
-            - symbol: str (NORMALIZADO)
+            - symbol: str (VALIDADO)
             - units: float
             - name: str (opcional, se resolverá después)
         
@@ -60,27 +66,78 @@ class PortfolioProcessor:
                 logger.warning(f"Asset incompleto (falta symbol o quantity): {asset}")
                 continue
             
-            # NORMALIZAR SÍMBOLO usando TickerNormalizer
-            original_symbol = symbol
-            normalized_symbol = TickerNormalizer.normalize(symbol)
+            original_symbol = symbol.strip().upper()
+            final_symbol = None
             
-            if original_symbol != normalized_symbol:
-                logger.info(f"Ticker normalizado: {original_symbol} → {normalized_symbol}")
+            # PASO 1: Validar formato básico del símbolo original
+            if not TickerNormalizer.validate_symbol(original_symbol):
+                logger.warning(
+                    f"Símbolo con formato inválido: {original_symbol}. "
+                    f"Intentando normalización..."
+                )
+                # Si el formato es inválido, ir directo a normalización
+                normalized_symbol = TickerNormalizer.normalize(original_symbol)
+                
+                if TickerNormalizer.validate_symbol(normalized_symbol):
+                    final_symbol = normalized_symbol
+                    logger.info(f"Ticker normalizado: {original_symbol} → {normalized_symbol}")
+                else:
+                    logger.warning(
+                        f"Símbolo inválido después de normalización: {normalized_symbol} "
+                        f"(original: {original_symbol}). Descartando..."
+                    )
+                    continue
+            else:
+                # PASO 2: El formato es válido, verificar contra yfinance
+                logger.debug(f"Verificando ticker original contra yfinance: {original_symbol}")
+                
+                if TickerNormalizer.is_ticker_valid_in_yfinance(original_symbol):
+                    # El ticker original funciona en yfinance
+                    final_symbol = original_symbol
+                    logger.info(f"Ticker validado en yfinance: {original_symbol}")
+                else:
+                    # PASO 3: El ticker original no funciona, intentar normalización
+                    logger.info(
+                        f"Ticker {original_symbol} no encontrado en yfinance. "
+                        f"Intentando normalización..."
+                    )
+                    normalized_symbol = TickerNormalizer.normalize(original_symbol)
+                    
+                    # Verificar si la normalización cambió algo
+                    if normalized_symbol != original_symbol:
+                        logger.debug(
+                            f"Verificando ticker normalizado contra yfinance: {normalized_symbol}"
+                        )
+                        
+                        if TickerNormalizer.is_ticker_valid_in_yfinance(normalized_symbol):
+                            final_symbol = normalized_symbol
+                            logger.info(
+                                f"Ticker normalizado y validado: {original_symbol} → {normalized_symbol}"
+                            )
+                        else:
+                            logger.warning(
+                                f"Ticker no encontrado después de normalización: {original_symbol} → "
+                                f"{normalized_symbol}. Descartando..."
+                            )
+                            continue
+                    else:
+                        # La normalización no cambió nada y sigue sin funcionar
+                        logger.warning(
+                            f"Ticker no válido en yfinance: {original_symbol}. Descartando..."
+                        )
+                        continue
             
-            # Validar que el símbolo normalizado sea válido
-            if not TickerNormalizer.validate_symbol(normalized_symbol):
-                logger.warning(f"Símbolo inválido después de normalización: {normalized_symbol} (original: {original_symbol})")
-                continue
-            
-            transformed.append({
-                "symbol": normalized_symbol,
-                "units": float(quantity),
-                "name": normalized_symbol,  # Se actualizará con datos reales de yfinance
-                # Datos adicionales para referencia
-                "acquisition_price": asset.get("acquisition_price"),
-                "acquisition_date": asset.get("acquisition_date"),
-                "original_symbol": original_symbol,  # Guardar símbolo original para trazabilidad
-            })
+            # Si llegamos aquí, tenemos un símbolo válido
+            if final_symbol:
+                transformed.append({
+                    "symbol": final_symbol,
+                    "units": float(quantity),
+                    "name": final_symbol,  # Se actualizará con datos reales de yfinance
+                    # Datos adicionales para referencia
+                    "acquisition_price": asset.get("acquisition_price"),
+                    "acquisition_date": asset.get("acquisition_date"),
+                    "original_symbol": original_symbol,  # Guardar símbolo original para trazabilidad
+                })
         
         return transformed
     
