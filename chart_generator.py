@@ -25,7 +25,7 @@ class ChartGenerator:
     def _export_png_to_bytes(self, fig: go.Figure) -> Optional[bytes]:
         """
         Exporta una figura de Plotly a PNG en memoria como bytes.
-        Implementación robusta con fallback automático.
+        Método robusto basado en write_image con manejo de errores mejorado.
         
         Args:
             fig: Figura de Plotly a exportar
@@ -38,43 +38,30 @@ class ChartGenerator:
             return None
 
         try:
-            logger.debug("Intentando exportar PNG usando write_image")
-            # Usar write_image con kaleido (método más robusto)
+            # Configurar dimensiones
             width = self.config.get("width", 1200)
             height = self.config.get("height", 600)
             
-            # Crear un buffer en memoria para el PNG
-            buffer = io.BytesIO()
+            logger.debug(f"Intentando exportar PNG con dimensiones {width}x{height}")
             
-            # Escribir la imagen al buffer
-            fig.write_image(buffer, format="png", width=width, height=height)
+            # Método directo: usar write_image que internamente maneja el buffer
+            # Este es el método que funciona correctamente en Heroku
+            img_bytes = fig.to_image(format="png", width=width, height=height)
             
-            # Obtener los bytes del buffer
-            buffer.seek(0)
-            img_bytes = buffer.read()
-            
-            logger.info(f"✅ PNG generado en memoria correctamente ({len(img_bytes)} bytes)")
-            return img_bytes
+            if img_bytes and len(img_bytes) > 0:
+                logger.info(f"✅ PNG generado correctamente ({len(img_bytes)} bytes)")
+                return img_bytes
+            else:
+                logger.warning("⚠️ Se generó PNG pero está vacío")
+                return None
             
         except ImportError as exc:
-            logger.error(f"⚠️ kaleido no está instalado, no se puede exportar PNG: {exc}")
+            logger.error(f"⚠️ kaleido no está instalado: {exc}")
             logger.info("💡 Instala kaleido con: pip install kaleido")
             return None
         except Exception as exc:
-            logger.error(f"⚠️ Fallo al exportar PNG: {str(exc)[:200]}")
-            # Intentar método alternativo con to_image
-            try:
-                logger.debug("Intentando método alternativo con to_image...")
-                img_bytes = fig.to_image(
-                    format="png",
-                    width=self.config.get("width", 1200),
-                    height=self.config.get("height", 600)
-                )
-                logger.info(f"✅ PNG generado con método alternativo ({len(img_bytes)} bytes)")
-                return img_bytes
-            except Exception as e2:
-                logger.error(f"❌ Ambos métodos de exportación PNG fallaron: {str(e2)[:200]}")
-                return None
+            logger.error(f"❌ Error al exportar PNG: {str(exc)[:200]}")
+            return None
     
     def _save_chart_robustly(
         self,
@@ -85,7 +72,7 @@ class ChartGenerator:
     ) -> Optional[str]:
         """
         Guarda un gráfico de forma robusta con manejo de errores mejorado.
-        Intenta PNG primero, luego HTML como fallback.
+        Implementación basada en el código funcional que sí trabaja en Heroku.
         
         Args:
             fig: Figura de Plotly a guardar
@@ -105,11 +92,12 @@ class ChartGenerator:
             
             if ext == '.png':
                 try:
+                    # Intentar guardar como PNG directamente
                     fig.write_image(filepath, width=width, height=height)
                     logger.info(f"✅ Gráfico guardado como PNG: {filepath}")
                     return filepath
                 except Exception as png_error:
-                    logger.error(f"⚠️ No se pudo guardar como PNG: {str(png_error)[:100]}")
+                    logger.error(f"⚠️ No se pudo guardar como PNG: {str(png_error)[:100]}...")
                     logger.info("💡 Guardando como HTML interactivo en su lugar...")
                     
                     # Fallback a HTML

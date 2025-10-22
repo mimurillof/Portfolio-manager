@@ -9,8 +9,10 @@ beautifulsoup4>=4.12.0
 requests>=2.32.0
 
 # Visualization
-plotly>=5.18.0
-kaleido>=0.2.1  # Para exportar gráficos a PNG
+plotly>=5.15.0,<6.0.0  # Mantenemos compatibilidad con PyPortfolioOpt
+ipywidgets
+kaleido==0.2.1  # Versión compatible con Plotly 5.x para exportar imágenes PNG
+matplotlib>=3.5.0  # Versión específica compatible con Heroku
 
 # Optional: Para mejor logging
 colorlog>=6.8.0

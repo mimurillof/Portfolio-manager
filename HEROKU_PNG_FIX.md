@@ -6,20 +6,21 @@ Las imágenes PNG de los gráficos no se estaban generando en Heroku debido a la
 
 ## Cambios realizados
 
-### 1. **Método de exportación PNG mejorado** (`chart_generator.py`)
+### 1. **Método de exportación PNG corregido** (`chart_generator.py`)
 
-Se actualizó el método `_export_png_to_bytes()` con:
-- ✅ Uso de `write_image()` con buffer en memoria (más robusto)
-- ✅ Fallback automático al método `to_image()` si el primero falla
-- ✅ Mejor manejo de errores con logs descriptivos
-- ✅ Mensajes informativos con emojis para facilitar debugging
+Se reemplazó completamente el método `_export_png_to_bytes()` con la implementación **probada y funcional**:
+- ✅ Usa `fig.to_image()` directamente (método que funciona en Heroku)
+- ✅ Sin buffer intermedio (simplificado)
+- ✅ Validación de bytes generados
+- ✅ Logs descriptivos con emojis para facilitar debugging
 
-### 2. **Método auxiliar para guardado robusto**
+### 2. **Versión específica de kaleido**
 
-Se agregó `_save_chart_robustly()` que:
-- ✅ Crea directorios automáticamente
-- ✅ Intenta PNG primero, luego HTML como fallback
-- ✅ Maneja errores de forma elegante
+Se fijó la versión exacta en `requirements.txt`:
+```
+kaleido==0.2.1
+```
+Esto evita incompatibilidades con versiones más recientes.
 
 ### 3. **Archivos de configuración para Heroku**
 
@@ -85,6 +86,22 @@ Busca estos mensajes de éxito:
 - ✅ `Gráfico guardado como PNG: ...`
 
 ## Verificación de la solución
+
+### Prueba automatizada (RECOMENDADO)
+
+Ejecuta el script de prueba para verificar que kaleido funcione:
+
+```bash
+heroku run python test_kaleido.py -a TU_APP_NAME
+```
+
+Este script ejecuta 4 pruebas:
+1. ✅ Importación de kaleido
+2. ✅ Importación de plotly
+3. ✅ Generación de PNG en memoria
+4. ✅ Escritura de PNG a archivo
+
+### Pruebas manuales
 
 1. **Verificar que kaleido esté instalado:**
    ```bash
