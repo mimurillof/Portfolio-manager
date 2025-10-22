@@ -1,9 +1,10 @@
 """
 Módulo para generar gráficos con Plotly
 """
+import io
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 import plotly.express as px
@@ -21,54 +22,57 @@ class ChartGenerator:
         self.colors = config.get("colors", {})
         self.enable_png = bool(config.get("enable_png_export", True))
 
-    def _export_png(self, fig: go.Figure, output_path: Path) -> None:
+    def _export_png_to_bytes(self, fig: go.Figure) -> Optional[bytes]:
         """
-        Exporta una figura de Plotly a PNG usando el método nativo write_image.
+        Exporta una figura de Plotly a PNG en memoria como bytes.
         
         Args:
             fig: Figura de Plotly a exportar
-            output_path: Ruta donde guardar el PNG
+        
+        Returns:
+            Bytes del archivo PNG o None si falla
         """
         if not self.enable_png:
             logger.debug("Exportación PNG deshabilitada en configuración")
-            return
-        
+            return None
+
         try:
-            # Convert to Path object if it's not already
-            path_obj = Path(output_path)
-            path_obj.parent.mkdir(parents=True, exist_ok=True)
-            logger.debug("Intentando exportar PNG a: %s", path_obj)
-            # Usar el método nativo de Plotly (requiere kaleido instalado)
-            fig.write_image(str(path_obj), width=self.config.get("width", 1566), height=self.config.get("height", 365))
-            logger.info("PNG guardado en: %s", path_obj)
+            logger.debug("Intentando exportar PNG a bytes en memoria")
+            # Usar el método nativo de Plotly para escribir directamente a bytes (requiere kaleido instalado)
+            img_bytes = fig.to_image(format="png", 
+                                    width=self.config.get("width", 1566), 
+                                    height=self.config.get("height", 365),
+                                    engine='kaleido')
+            logger.info("PNG generado en memoria correctamente")
+            return img_bytes
         except ImportError as exc:
             logger.error("kaleido no está instalado, no se puede exportar PNG: %s", exc)
+            return None
         except Exception as exc:
-            logger.error("Fallo al exportar PNG en %s: %s", path_obj, exc)
-            # Also raise the exception to make the failure visible in calling functions
-            raise
+            logger.error("Fallo al exportar PNG a bytes: %s", exc)
+            return None
     
     def create_portfolio_performance_chart(
         self, 
         performance_df: pd.DataFrame,
         output_html: Path,
         output_png: Optional[Path] = None
-    ) -> str:
+    ) -> Tuple[str, Optional[bytes]]:
         """
         Crea el gráfico de rendimiento del portafolio
         
         Args:
             performance_df: DataFrame con el rendimiento
             output_html: Ruta para guardar el HTML
-            output_png: Ruta opcional para guardar PNG
+            output_png: Ruta opcional para guardar PNG (se mantiene por compatibilidad)
         
         Returns:
-            Ruta del archivo HTML generado
+            Tupla con (ruta del HTML generado, bytes del PNG o None)
         """
         try:
             if performance_df.empty:
                 logger.warning("DataFrame vacío, no se puede generar gráfico")
-                return ""
+                return "", None
             
             # Crear figura
             fig = go.Figure()
@@ -117,15 +121,16 @@ class ChartGenerator:
             fig.write_html(str(output_html))
             logger.info(f"Gráfico HTML guardado en: {output_html}")
             
-            # Guardar PNG si se especifica
-            if output_png and self.enable_png:
-                self._export_png(fig, Path(output_png))
+            # Generar PNG en memoria
+            png_bytes = None
+            if self.enable_png:
+                png_bytes = self._export_png_to_bytes(fig)
             
-            return str(output_html)
+            return str(output_html), png_bytes
         
         except Exception as e:
             logger.error(f"Error generando gráfico de portafolio: {e}")
-            return ""
+            return "", None
     
     def create_asset_chart(
         self,
@@ -135,7 +140,7 @@ class ChartGenerator:
         output_png: Optional[Path] = None,
         daily_data: Optional[pd.DataFrame] = None,
         intraday_interval: Optional[str] = None,
-    ) -> str:
+    ) -> Tuple[str, Optional[bytes]]:
         """
         Crea un gráfico individual para un activo
         
@@ -143,15 +148,17 @@ class ChartGenerator:
             symbol: Símbolo del activo
             hist_data: DataFrame con datos históricos
             output_html: Ruta para guardar el HTML
-            output_png: Ruta opcional para guardar PNG
+            output_png: Ruta opcional para guardar PNG (se mantiene por compatibilidad)
+            daily_data: Datos diarios
+            intraday_interval: Intervalo intradiario
         
         Returns:
-            Ruta del archivo HTML generado
+            Tupla con (ruta del HTML generado, bytes del PNG o None)
         """
         try:
             if (intraday_data is None or intraday_data.empty) and (daily_data is None or daily_data.empty):
                 logger.warning(f"No hay datos para {symbol}")
-                return ""
+                return "", None
 
             traces = []
             buttons = []
@@ -233,7 +240,7 @@ class ChartGenerator:
 
             if not traces:
                 logger.warning(f"No se pudieron crear trazas para {symbol}")
-                return ""
+                return "", None
 
             fig = go.Figure(data=traces)
 
@@ -288,15 +295,16 @@ class ChartGenerator:
             fig.write_html(str(output_html))
             logger.info(f"Gráfico de {symbol} guardado en: {output_html}")
             
-            # Guardar PNG si se especifica
-            if output_png and self.enable_png:
-                self._export_png(fig, Path(output_png))
+            # Generar PNG en memoria
+            png_bytes = None
+            if self.enable_png:
+                png_bytes = self._export_png_to_bytes(fig)
             
-            return str(output_html)
+            return str(output_html), png_bytes
         
         except Exception as e:
             logger.error(f"Error generando gráfico para {symbol}: {e}")
-            return ""
+            return "", None
     
     def create_mini_sparkline(self, data: List[float]) -> str:
         """
@@ -342,22 +350,22 @@ class ChartGenerator:
         allocation_data: List[Dict],
         output_html: Path,
         output_png: Optional[Path] = None
-    ) -> str:
+    ) -> Tuple[str, Optional[bytes]]:
         """
         Crea un gráfico de pastel con la distribución del portafolio
         
         Args:
             allocation_data: Lista con datos de distribución
             output_html: Ruta para guardar el HTML
-            output_png: Ruta opcional para guardar PNG
+            output_png: Ruta opcional para guardar PNG (se mantiene por compatibilidad)
         
         Returns:
-            Ruta del archivo HTML generado
+            Tupla con (ruta del HTML generado, bytes del PNG o None)
         """
         try:
             if not allocation_data:
                 logger.warning("No hay datos de distribución")
-                return ""
+                return "", None
             
             labels = [asset["symbol"] for asset in allocation_data]
             values = [asset["allocation_percent"] for asset in allocation_data]
@@ -383,12 +391,13 @@ class ChartGenerator:
             fig.write_html(str(output_html))
             logger.info(f"Gráfico de distribución guardado en: {output_html}")
             
-            # Guardar PNG si se especifica
-            if output_png and self.enable_png:
-                self._export_png(fig, Path(output_png))
+            # Generar PNG en memoria
+            png_bytes = None
+            if self.enable_png:
+                png_bytes = self._export_png_to_bytes(fig)
             
-            return str(output_html)
+            return str(output_html), png_bytes
         
         except Exception as e:
             logger.error(f"Error generando gráfico de distribución: {e}")
-            return ""
+            return "", None

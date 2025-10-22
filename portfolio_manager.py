@@ -6,7 +6,7 @@ import json
 import logging
 import math
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime
 from numbers import Real
 
@@ -221,7 +221,7 @@ class PortfolioManager:
         logger.info("Generando gráficos...")
         
         # Gráfico principal del portafolio
-        self.chart_generator.create_portfolio_performance_chart(
+        html_path, png_bytes = self.chart_generator.create_portfolio_performance_chart(
             performance_df,
             OUTPUT_FILES["portfolio_chart_html"],
             OUTPUT_FILES["portfolio_chart_png"]
@@ -229,12 +229,16 @@ class PortfolioManager:
 
         charts_map: Dict[str, str] = {
             "portfolio_performance": str(OUTPUT_FILES["portfolio_chart_html"]),
-            "portfolio_performance_png": str(OUTPUT_FILES["portfolio_chart_png"]),
         }
-
-        self._upload_chart_if_enabled("portfolio_performance", OUTPUT_FILES["portfolio_chart_html"], charts_map, user_id)
-        self._upload_chart_if_enabled("portfolio_performance_png", OUTPUT_FILES["portfolio_chart_png"], charts_map, user_id)
         
+        # Upload HTML chart
+        self._upload_chart_if_enabled("portfolio_performance", OUTPUT_FILES["portfolio_chart_html"], charts_map, user_id)
+        # Upload PNG bytes directly to Supabase
+        if png_bytes:
+            self._upload_png_bytes_to_supabase("portfolio_performance", png_bytes, charts_map, user_id)
+        else:
+            logger.warning("No PNG bytes generated for portfolio performance chart")
+
         # Gráficos individuales de cada activo
         assets_charts_dir = OUTPUT_FILES["assets_charts_dir"]
         
@@ -272,7 +276,7 @@ class PortfolioManager:
             output_html = assets_charts_dir / f"{symbol}_chart.html"
             output_png = assets_charts_dir / f"{symbol}_chart.png"
 
-            self.chart_generator.create_asset_chart(
+            html_path, png_bytes = self.chart_generator.create_asset_chart(
                 symbol,
                 intraday_data,
                 output_html,
@@ -283,24 +287,79 @@ class PortfolioManager:
 
             # Usar símbolo sanitizado para las claves en charts_map (para consistencia con Supabase)
             sanitized_symbol = SupabaseConfig.sanitize_filename_for_storage(symbol)
+            # Upload HTML chart
             self._upload_chart_if_enabled(f"asset_{sanitized_symbol}_html", output_html, charts_map, user_id)
-            self._upload_chart_if_enabled(f"asset_{sanitized_symbol}_png", output_png, charts_map, user_id)
-        
-        # Gráfico de distribución (usa allocation ya calculado en generate_full_report)
-        allocation_html = Path(OUTPUT_FILES["assets_charts_dir"]).parent / "allocation_chart.html"
-        allocation_png = Path(OUTPUT_FILES["assets_charts_dir"]).parent / "allocation_chart.png"
-        
-        self.chart_generator.create_allocation_pie_chart(
-            allocation,  # Usar el allocation pasado como parámetro
-            allocation_html,
-            allocation_png
-        )
+            # Upload PNG bytes directly to Supabase
+            if png_bytes:
+                self._upload_png_bytes_to_supabase(f"asset_{sanitized_symbol}", png_bytes, charts_map, user_id)
+            else:
+                logger.warning(f"No PNG bytes generated for asset {symbol}")
 
-        self._upload_chart_if_enabled("allocation_chart", allocation_html, charts_map, user_id)
-        self._upload_chart_if_enabled("allocation_chart_png", allocation_png, charts_map, user_id)
+        # Gráfico de distribución (usa allocation ya calculado en generate_full_report)
+        allocation_html, allocation_png_bytes = self.chart_generator.create_allocation_pie_chart(
+            allocation,  # Usar el allocation pasado como parámetro
+            Path(OUTPUT_FILES["assets_charts_dir"]).parent / "allocation_chart.html",
+            Path(OUTPUT_FILES["assets_charts_dir"]).parent / "allocation_chart.png"
+        )
+        
+        # Upload HTML chart
+        self._upload_chart_if_enabled("allocation_chart", Path(OUTPUT_FILES["assets_charts_dir"]).parent / "allocation_chart.html", charts_map, user_id)
+        # Upload PNG bytes directly to Supabase
+        if allocation_png_bytes:
+            self._upload_png_bytes_to_supabase("allocation_chart", allocation_png_bytes, charts_map, user_id)
+        else:
+            logger.warning("No PNG bytes generated for allocation chart")
         
         logger.info("Gráficos generados exitosamente")
         return charts_map
+
+    def _upload_png_bytes_to_supabase(
+        self, 
+        key: str, 
+        png_bytes: bytes, 
+        charts_map: Dict[str, str], 
+        user_id: Optional[str] = None
+    ) -> None:
+        """
+        Sube bytes de PNG directamente a Supabase Storage sin crear archivo local.
+        
+        Args:
+            key: clave para identificar el gráfico
+            png_bytes: bytes del archivo PNG
+            charts_map: diccionario para almacenar información de rutas remotas
+            user_id: UUID del usuario
+        """
+        try:
+            # Importar aquí para evitar problemas con los paths de archivo
+            from config import SupabaseConfig
+            
+            # Generar el nombre de archivo remoto basado en la clave
+            # Si es un gráfico de activo, extraer el nombre del activo y generar el path correcto
+            if key.startswith("asset_"):
+                # Extraer el nombre del símbolo desde la clave (ej: "asset_NVD_F" -> "NVD-F")
+                # Pero ya está sanitizado, así que usamos directamente el nombre sanitizado
+                remote_path = SupabaseConfig.build_chart_path(f"{key.replace('asset_', '')}_chart.png", user_id)
+            elif key == "portfolio_performance":
+                remote_path = SupabaseConfig.build_chart_path("portfolio_chart.png", user_id)
+            elif key == "allocation_chart":
+                remote_path = SupabaseConfig.build_chart_path("allocation_chart.png", user_id)
+            else:
+                remote_path = SupabaseConfig.build_chart_path(f"{key}_chart.png", user_id)
+            
+            # Subir directamente al bucket
+            remote_info = self.storage.upload_png_bytes(png_bytes, remote_path)
+            
+            if remote_info:
+                charts_map[f"{key}_png_remote"] = remote_info.get("path", "")
+                if remote_info.get("public_url"):
+                    charts_map[f"{key}_png_url"] = remote_info["public_url"]
+                
+                logger.info(f"PNG subido exitosamente a: {remote_info.get('path', 'desconocido')}")
+            else:
+                logger.warning(f"No se pudo obtener información remota para {key} PNG")
+                
+        except Exception as exc:
+            logger.error(f"No se pudo subir PNG bytes para '{key}' a Supabase: {exc}")
 
     def _upload_chart_if_enabled(
         self, 

@@ -242,6 +242,62 @@ class SupabaseStorage:
             except Exception:  # pragma: no cover - limpieza best effort
                 pass
 
+    def upload_png_bytes(self, png_bytes: bytes, remote_path: str) -> Optional[Dict[str, str]]:
+        """
+        Sube bytes de PNG directamente al bucket de Supabase Storage sin crear archivo local.
+        
+        Args:
+            png_bytes: Bytes del archivo PNG a subir
+            remote_path: Ruta remota donde guardar el archivo en el bucket
+        
+        Returns:
+            Diccionario con path y public_url del archivo subido
+        """
+        if not self._is_enabled():
+            logger.debug("Supabase deshabilitado; no se sube bytes a %s", remote_path)
+            return None
+
+        bucket = self._get_bucket()
+
+        logger.info("Subiendo PNG bytes directamente a Supabase: %s/%s", SupabaseConfig.SUPABASE_BUCKET_NAME, remote_path)
+
+        try:
+            response = bucket.upload(
+                remote_path,
+                png_bytes,  # Pass bytes directly
+                {
+                    "content-type": "image/png",
+                    "upsert": "true",
+                },
+            )
+
+            error_message = self._extract_error(response)
+            if error_message:
+                raise RuntimeError(error_message)
+
+            public_url: Optional[str] = None
+            try:
+                public_url = bucket.get_public_url(remote_path)
+            except Exception:  # pragma: no cover - bucket privado
+                try:
+                    signed_url = bucket.create_signed_url(remote_path, 3600)
+                    if isinstance(signed_url, dict):
+                        public_url = signed_url.get("signedURL") or signed_url.get("signed_url")
+                    elif isinstance(signed_url, str):
+                        public_url = signed_url
+                except Exception:
+                    public_url = None
+
+            result: Dict[str, str] = {"path": remote_path}
+            if public_url:
+                result["public_url"] = public_url
+
+            return result
+            
+        except Exception as exc:
+            logger.error("No se pudo subir PNG bytes a Supabase: %s", exc)
+            raise
+
     def upload_chart_asset(self, local_path: Path, user_id: Optional[str] = None) -> Optional[Dict[str, str]]:
         """
         Sube un archivo de gráfico (HTML/PNG) al prefijo configurado.
