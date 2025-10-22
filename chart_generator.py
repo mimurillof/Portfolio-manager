@@ -185,10 +185,29 @@ class ChartGenerator:
             fig.write_html(str(output_html))
             logger.info(f"Gráfico HTML guardado en: {output_html}")
             
-            # Generar PNG en memoria
+            # Generar PNG (primero intentando vía archivo para reproducir comportamiento funcional existente)
             png_bytes = None
             if self.enable_png:
-                png_bytes = self._export_png_to_bytes(fig)
+                saved_path = None
+                if output_png is not None:
+                    saved_path = self._save_chart_robustly(
+                        fig,
+                        str(output_png),
+                        width=self.config.get("width", 1200),
+                        height=self.config.get("height", 600)
+                    )
+                    if saved_path and saved_path.lower().endswith(".png"):
+                        try:
+                            with open(saved_path, "rb") as png_file:
+                                png_bytes = png_file.read()
+                            logger.info(f"PNG cargado desde disco: {saved_path}")
+                        except Exception as file_error:
+                            logger.error(f"No se pudo leer PNG generado ({saved_path}): {file_error}")
+                            png_bytes = None
+                
+                # Fallback a generación in-memory si no obtuvimos bytes desde archivo
+                if png_bytes is None:
+                    png_bytes = self._export_png_to_bytes(fig)
             
             return str(output_html), png_bytes
         
@@ -359,10 +378,28 @@ class ChartGenerator:
             fig.write_html(str(output_html))
             logger.info(f"Gráfico de {symbol} guardado en: {output_html}")
             
-            # Generar PNG en memoria
+            # Generar PNG (intentar primero guardando a archivo, luego fallback en memoria)
             png_bytes = None
             if self.enable_png:
-                png_bytes = self._export_png_to_bytes(fig)
+                saved_path = None
+                if output_png is not None:
+                    saved_path = self._save_chart_robustly(
+                        fig,
+                        str(output_png),
+                        width=self.config.get("width", 1200),
+                        height=self.config.get("height", 600)
+                    )
+                    if saved_path and saved_path.lower().endswith(".png"):
+                        try:
+                            with open(saved_path, "rb") as png_file:
+                                png_bytes = png_file.read()
+                            logger.info(f"PNG de {symbol} cargado desde disco: {saved_path}")
+                        except Exception as file_error:
+                            logger.error(f"No se pudo leer PNG de {symbol} en {saved_path}: {file_error}")
+                            png_bytes = None
+                
+                if png_bytes is None:
+                    png_bytes = self._export_png_to_bytes(fig)
             
             return str(output_html), png_bytes
         
@@ -455,10 +492,27 @@ class ChartGenerator:
             fig.write_html(str(output_html))
             logger.info(f"Gráfico de distribución guardado en: {output_html}")
             
-            # Generar PNG en memoria
             png_bytes = None
             if self.enable_png:
-                png_bytes = self._export_png_to_bytes(fig)
+                saved_path = None
+                if output_png is not None:
+                    saved_path = self._save_chart_robustly(
+                        fig,
+                        str(output_png),
+                        width=self.config.get("width", 1200),
+                        height=self.config.get("height", 600)
+                    )
+                    if saved_path and saved_path.lower().endswith(".png"):
+                        try:
+                            with open(saved_path, "rb") as png_file:
+                                png_bytes = png_file.read()
+                            logger.info(f"PNG de distribución cargado desde disco: {saved_path}")
+                        except Exception as file_error:
+                            logger.error(f"No se pudo leer PNG de distribución en {saved_path}: {file_error}")
+                            png_bytes = None
+                
+                if png_bytes is None:
+                    png_bytes = self._export_png_to_bytes(fig)
             
             return str(output_html), png_bytes
         
