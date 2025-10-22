@@ -33,12 +33,16 @@ class ChartGenerator:
             return
         
         try:
-            output_path.parent.mkdir(parents=True, exist_ok=True)
+            # Convert to Path object if it's not already
+            path_obj = Path(output_path)
+            path_obj.parent.mkdir(parents=True, exist_ok=True)
             # Usar el método nativo de Plotly (requiere kaleido instalado)
-            fig.write_image(str(output_path), width=self.config.get("width", 1566), height=self.config.get("height", 365))
-            logger.info("PNG guardado en: %s", output_path)
+            fig.write_image(str(path_obj), width=self.config.get("width", 1566), height=self.config.get("height", 365))
+            logger.info("PNG guardado en: %s", path_obj)
+        except ImportError as exc:
+            logger.warning("kaleido no está instalado, no se puede exportar PNG: %s", exc)
         except Exception as exc:
-            logger.warning("Fallo al exportar PNG en %s: %s", output_path, exc)
+            logger.warning("Fallo al exportar PNG en %s: %s", path_obj, exc)
     
     def create_portfolio_performance_chart(
         self, 

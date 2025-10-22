@@ -315,6 +315,7 @@ class PortfolioManager:
             return
         
         # Si es PNG, verificar que fue generado recientemente (menos de 5 minutos)
+        # para evitar subir archivos obsoletos cuando la exportación falla
         if path.suffix.lower() == '.png':
             from datetime import datetime, timedelta
             file_modified = datetime.fromtimestamp(path.stat().st_mtime)
