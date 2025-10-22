@@ -25,6 +25,7 @@ class ChartGenerator:
     def _export_png_to_bytes(self, fig: go.Figure) -> Optional[bytes]:
         """
         Exporta una figura de Plotly a PNG en memoria como bytes.
+        Implementación robusta con fallback automático.
         
         Args:
             fig: Figura de Plotly a exportar
@@ -37,20 +38,95 @@ class ChartGenerator:
             return None
 
         try:
-            logger.debug("Intentando exportar PNG a bytes en memoria")
-            # Usar el método nativo de Plotly para escribir directamente a bytes (requiere kaleido instalado)
-            img_bytes = fig.to_image(format="png", 
-                                    width=self.config.get("width", 1566), 
-                                    height=self.config.get("height", 365),
-                                    engine='kaleido')
-            logger.info("PNG generado en memoria correctamente")
+            logger.debug("Intentando exportar PNG usando write_image")
+            # Usar write_image con kaleido (método más robusto)
+            width = self.config.get("width", 1200)
+            height = self.config.get("height", 600)
+            
+            # Crear un buffer en memoria para el PNG
+            buffer = io.BytesIO()
+            
+            # Escribir la imagen al buffer
+            fig.write_image(buffer, format="png", width=width, height=height)
+            
+            # Obtener los bytes del buffer
+            buffer.seek(0)
+            img_bytes = buffer.read()
+            
+            logger.info(f"✅ PNG generado en memoria correctamente ({len(img_bytes)} bytes)")
             return img_bytes
+            
         except ImportError as exc:
-            logger.error("kaleido no está instalado, no se puede exportar PNG: %s", exc)
+            logger.error(f"⚠️ kaleido no está instalado, no se puede exportar PNG: {exc}")
+            logger.info("💡 Instala kaleido con: pip install kaleido")
             return None
         except Exception as exc:
-            logger.error("Fallo al exportar PNG a bytes: %s", exc)
+            logger.error(f"⚠️ Fallo al exportar PNG: {str(exc)[:200]}")
+            # Intentar método alternativo con to_image
+            try:
+                logger.debug("Intentando método alternativo con to_image...")
+                img_bytes = fig.to_image(
+                    format="png",
+                    width=self.config.get("width", 1200),
+                    height=self.config.get("height", 600)
+                )
+                logger.info(f"✅ PNG generado con método alternativo ({len(img_bytes)} bytes)")
+                return img_bytes
+            except Exception as e2:
+                logger.error(f"❌ Ambos métodos de exportación PNG fallaron: {str(e2)[:200]}")
+                return None
+    
+    def _save_chart_robustly(
+        self,
+        fig: go.Figure,
+        filepath: str,
+        width: int = 1200,
+        height: int = 600
+    ) -> Optional[str]:
+        """
+        Guarda un gráfico de forma robusta con manejo de errores mejorado.
+        Intenta PNG primero, luego HTML como fallback.
+        
+        Args:
+            fig: Figura de Plotly a guardar
+            filepath: Ruta completa donde guardar
+            width: Ancho de la imagen
+            height: Alto de la imagen
+            
+        Returns:
+            Ruta del archivo guardado o None si falla
+        """
+        try:
+            # Crear directorio si no existe
+            Path(filepath).parent.mkdir(parents=True, exist_ok=True)
+            
+            # Determinar el formato según la extensión
+            ext = Path(filepath).suffix.lower()
+            
+            if ext == '.png':
+                try:
+                    fig.write_image(filepath, width=width, height=height)
+                    logger.info(f"✅ Gráfico guardado como PNG: {filepath}")
+                    return filepath
+                except Exception as png_error:
+                    logger.error(f"⚠️ No se pudo guardar como PNG: {str(png_error)[:100]}")
+                    logger.info("💡 Guardando como HTML interactivo en su lugar...")
+                    
+                    # Fallback a HTML
+                    html_filepath = filepath.replace('.png', '.html')
+                    fig.write_html(html_filepath)
+                    logger.info(f"✅ Gráfico guardado como HTML: {html_filepath}")
+                    return html_filepath
+            else:
+                # Guardar como HTML directamente
+                fig.write_html(filepath)
+                logger.info(f"✅ Gráfico guardado como HTML: {filepath}")
+                return filepath
+                
+        except Exception as e:
+            logger.error(f"❌ Error al guardar gráfico: {str(e)[:200]}")
             return None
+    
     
     def create_portfolio_performance_chart(
         self, 
