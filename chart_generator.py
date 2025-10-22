@@ -60,7 +60,7 @@ class ChartGenerator:
             logger.info("💡 Instala kaleido con: pip install kaleido")
             return None
         except Exception as exc:
-            logger.error(f"❌ Error al exportar PNG: {str(exc)[:200]}")
+            logger.exception("❌ Error al exportar PNG con to_image")
             return None
     
     def _save_chart_robustly(
@@ -97,7 +97,7 @@ class ChartGenerator:
                     logger.info(f"✅ Gráfico guardado como PNG: {filepath}")
                     return filepath
                 except Exception as png_error:
-                    logger.error(f"⚠️ No se pudo guardar como PNG: {str(png_error)[:100]}...")
+                    logger.exception("⚠️ No se pudo guardar como PNG usando write_image")
                     logger.info("💡 Guardando como HTML interactivo en su lugar...")
                     
                     # Fallback a HTML
@@ -112,7 +112,7 @@ class ChartGenerator:
                 return filepath
                 
         except Exception as e:
-            logger.error(f"❌ Error al guardar gráfico: {str(e)[:200]}")
+            logger.exception("❌ Error inesperado al guardar gráfico")
             return None
     
     
@@ -207,7 +207,11 @@ class ChartGenerator:
                 
                 # Fallback a generación in-memory si no obtuvimos bytes desde archivo
                 if png_bytes is None:
+                    logger.debug("Intentando exportación PNG en memoria para gráfico de portafolio")
                     png_bytes = self._export_png_to_bytes(fig)
+
+                if png_bytes is None:
+                    logger.warning("No se pudo generar PNG del gráfico de portafolio (disco ni memoria)")
             
             return str(output_html), png_bytes
         
@@ -399,7 +403,11 @@ class ChartGenerator:
                             png_bytes = None
                 
                 if png_bytes is None:
+                    logger.debug(f"Intentando exportación PNG en memoria para {symbol}")
                     png_bytes = self._export_png_to_bytes(fig)
+
+                if png_bytes is None:
+                    logger.warning(f"No se pudo generar PNG para {symbol} (disco ni memoria)")
             
             return str(output_html), png_bytes
         
@@ -512,7 +520,11 @@ class ChartGenerator:
                             png_bytes = None
                 
                 if png_bytes is None:
+                    logger.debug("Intentando exportación PNG en memoria para gráfico de distribución")
                     png_bytes = self._export_png_to_bytes(fig)
+
+                if png_bytes is None:
+                    logger.warning("No se pudo generar PNG del gráfico de distribución (disco ni memoria)")
             
             return str(output_html), png_bytes
         
