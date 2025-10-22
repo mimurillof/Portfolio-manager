@@ -22,6 +22,25 @@ class ChartGenerator:
         self.colors = config.get("colors", {})
         self.enable_png = bool(config.get("enable_png_export", True))
 
+        # Detectar disponibilidad de kaleido una sola vez
+        self._kaleido_available = False
+        try:
+            import importlib
+
+            kaleido_module = importlib.import_module("kaleido")
+            self._kaleido_available = True
+            version = getattr(kaleido_module, "__version__", "desconocida")
+            logger.info(f"Kaleido disponible (versión {version})")
+        except ModuleNotFoundError:
+            logger.warning("Kaleido no está instalado; la exportación PNG puede fallar")
+        except Exception as exc:
+            logger.exception("Error inesperado verificando la disponibilidad de kaleido")
+
+        if self.enable_png and not self._kaleido_available:
+            logger.warning(
+                "La exportación PNG está habilitada en configuración pero kaleido no está disponible; se intentará igualmente y se registrarán errores."
+            )
+
     def _export_png_to_bytes(self, fig: go.Figure) -> Optional[bytes]:
         """
         Exporta una figura de Plotly a PNG en memoria como bytes.
